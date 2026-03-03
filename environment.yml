@@ -1,0 +1,12 @@
+name: weather-analysis-and-forecasting
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - pandas
+  - matplotlib
+  - metpy
+  - requests
+  - notebook
+  - ipykernel
