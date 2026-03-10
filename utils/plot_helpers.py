@@ -36,6 +36,7 @@ AIRPORTS_URL = (
     "https://raw.githubusercontent.com/davidmegginson/"
     "ourairports-data/master/airports.csv"
 )
+ISO_COUNTRY = "GR"        # Two-letter ISO country code for network filtering
 
 # [Map geometry]
 GREECE_EXTENT  = [19.0, 29.5, 34.5, 42.0]   # [lon_min, lon_max, lat_min, lat_max]
@@ -69,7 +70,7 @@ FONT_TITLE   = 22            # map title
 
 def fetch_station_coords(
     url: str = AIRPORTS_URL,
-    iso_country: str = "GR",
+    iso_country: str = ISO_COUNTRY,
 ) -> pd.DataFrame:
     """
     Fetch ICAO station coordinates from the OurAirports open database.
