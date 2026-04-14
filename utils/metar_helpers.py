@@ -4,7 +4,7 @@ Script Name: metar_helpers.py
 Purpose: Parse raw FM-15 METAR strings and provide unit-conversion and QC helpers.
 
 Author(s): Christos Giannaros, One Weather Lab, University of Ioannina <chris.giannaros@uoi.gr>
-Last updated: 2026-02-28
+Last updated: 2026-04-13
 Version: 4.0.0
 License: MIT
 
@@ -527,9 +527,9 @@ def parse_metar_string(metar_str: str) -> Dict:
         # A-group: 4-digit inHg × 100  (e.g. A2992 = 29.92 inHg)
         result["mslp"] = inhg_to_hpa(float(m_a.group("inhg")) / 100.0)
 
-    # SLP from remarks (fallback, when no Q/A group)
+    # MSLP from remarks (fallback, when no Q/A group)
     if "mslp" not in result and rmk:
-        m = _RX_SLP.search(rmk)
+        m = _RX_MSLP.search(rmk)
         if m:
             result["mslp"] = _decode_slp(m.group("mslp"))
 
@@ -590,8 +590,6 @@ def knots_to_ms(speed_kt: float) -> float:
 def knots_to_kmh(speed_kt: float) -> float:
     """
     Convert wind speed from knots to km/h.
-
-    Retained for backward compatibility.
 
     Parameters
     ----------
