@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 Script Name: iem_raw.py
-Purpose: Retrieve raw  METAR from the Iowa Environmental Mesonet (IEM) ASOS service.
+Purpose: Retrieve raw METAR from the Iowa Environmental Mesonet (IEM) ASOS service.
 
 Author(s): Christos Giannaros, One Weather Lab, University of Ioannina <chris.giannaros@uoi.gr>
-Last updated: 2026-02-28
-Version: 3.0.0
+Last updated: 2026-04-13
+Version: 3.1.0
 License: MIT
 
 Notes:
@@ -50,7 +50,8 @@ LOG = logging.getLogger("owl.iem.raw")
 # Functions
 # -----------------------------------------------------------------------------
 
-# [Internal helper]
+# [Internal helpers]
+
 
 def _build_url(stations: List[str], start_date: str, end_date: str) -> str:
     """
@@ -85,7 +86,7 @@ def _build_url(stations: List[str], start_date: str, end_date: str) -> str:
         "&report_type=3"                           # routine observations
     )
 
-# [Core IEM METAR fetcer]
+# [Core IEM METAR fetcher]
 
 def fetch_iem_raw(stations: List[str], start_date: str, end_date: str) -> pd.DataFrame:
     """
