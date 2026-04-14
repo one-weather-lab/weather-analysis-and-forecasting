@@ -64,13 +64,12 @@ from .plot_helpers import (
     plot_europe_metar_network,
     plot_europe_mslp_raw,
     plot_europe_isobars,
+    plot_maxmin_points,
     plot_europe_isobars_hl,
     plot_europe_enhanced_station_isobars,
     plot_europe_isobars_wind,
     plot_europe_isobars_temperature,
     plot_europe_isobars_temperature_humidity,
-    plot_europe_upper_air,
-    plot_maxmin_points,
     # Upper-air station plot
     plot_europe_500hpa_stations,
 )
