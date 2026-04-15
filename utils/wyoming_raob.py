@@ -253,7 +253,7 @@ def fetch_latest_sounding(
     Fetch the most recently completed radiosonde sounding.
 
     Determines the latest completed sounding time based on
-    ``datetime.utcnow()``:
+    ``datetime.now(timezone.utc)``:
 
     - UTC hour >= 6 and < 18  -> today 00 UTC
     - UTC hour >= 18          -> today 12 UTC

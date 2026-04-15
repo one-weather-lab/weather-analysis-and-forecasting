@@ -531,7 +531,7 @@ def parse_metar_string(metar_str: str) -> Dict:
     if "mslp" not in result and rmk:
         m = _RX_MSLP.search(rmk)
         if m:
-            result["mslp"] = _decode_slp(m.group("mslp"))
+            result["mslp"] = _decode_mslp(m.group("mslp"))
 
     # ── Significant weather ───────────────────────────────────────────────────
     wx = _RX_WX.findall(body_stripped)

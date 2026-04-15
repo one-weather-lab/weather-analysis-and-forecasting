@@ -4,7 +4,9 @@
 
 | # | Title | Core topics |
 |---|-------|-------------|
-| 01 | surface_weather_reports | Execution of a surface **weather data analysis workflow** that reflects **operational meteorology** practices |
+| 01 | surface_weather_reports | Application of a surface **weather data analysis workflow** that reflects **operational meteorology** practices |
+| 02 | synoptic_analysis_I | Application of a **synoptic analysis** workflow through surface contouring, and **upper-air station plotting** at 500 hPa |
+
 
 > Notebooks are added progressively throughout the course.
 

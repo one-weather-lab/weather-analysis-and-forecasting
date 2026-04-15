@@ -93,6 +93,13 @@ def fetch_igra2_europe(
         longitude_deg  Longitude in degrees East
         elevation_m    Elevation in metres above MSL
         ============== =============================================
+    Reference(s)
+    ----------
+    Durre, I., Yin, X., Vose, R.S., Applequist, S., Arnfield J.,
+    Korzeniewski, B. & Hundermark, B. (2016).
+    Integrated Global Radiosonde Archive (IGRA), Version 2. 
+    NOAA National Centers for Environmental Information. 
+    https://doi.org/10.7289/V5X63K0Q
     """
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
@@ -182,7 +189,7 @@ def fetch_europe_raob_fields(
     Fetch the latest sounding for every station in station_meta and extract
     500 hPa fields by linear interpolation on the pressure coordinate.
 
-    Requests are issued in parallel (up to 16 threads).  Stations for which
+    Requests are issued in parallel (up to ``MAX_RAOB_WORKERS`` threads).  Stations for which
     the Wyoming archive returns no sounding are silently skipped.
 
     Parameters
