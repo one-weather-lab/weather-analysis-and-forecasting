@@ -926,10 +926,14 @@ def plot_europe_mslp_raw(
     # Time label
     obs_times = pd.to_datetime(df_geo["valid"]).dropna()
     if len(obs_times) > 0:
-        t_max = obs_times.max()
-        time_label = t_max.strftime("%Y-%m-%d %H:%M UTC")
+        t_min, t_max = obs_times.min(), obs_times.max()
+        if t_min.strftime("%Y-%m-%d %H") == t_max.strftime("%Y-%m-%d %H"):
+            time_label = f"Latest METAR: {t_max.strftime('%Y-%m-%d %H:%M UTC')}"
+        else:
+            time_label = (f"METAR range: {t_min.strftime('%Y-%m-%d %H:%M')} "
+                          f"\u2013 {t_max.strftime('%H:%M')} UTC")
     else:
-        time_label = "unknown time"
+        time_label = "Latest METAR: unknown time"
 
     title_line = f"Station MSLP (hPa)\n{time_label}"
     ax.set_title(title_line, fontsize=FONT_TITLE, loc="left", fontweight="bold")
@@ -985,7 +989,15 @@ def plot_europe_isobars(
     # ── Derive time label ─────────────────────────────────────────────────
     if df_geo is not None and not df_geo.empty:
         obs_times = pd.to_datetime(df_geo["valid"]).dropna()
-        time_label = obs_times.max().strftime("%Y-%m-%d %H:%M UTC") if len(obs_times) > 0 else "unknown time"
+        if len(obs_times) > 0:
+            t_min, t_max = obs_times.min(), obs_times.max()
+            if t_min.strftime("%Y-%m-%d %H") == t_max.strftime("%Y-%m-%d %H"):
+                time_label = f"Latest METAR: {t_max.strftime('%Y-%m-%d %H:%M UTC')}"
+            else:
+                time_label = (f"METAR range: {t_min.strftime('%Y-%m-%d %H:%M')} "
+                              f"\u2013 {t_max.strftime('%H:%M')} UTC")
+        else:
+            time_label = "Latest METAR: unknown time"
     else:
         time_label = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -1054,7 +1066,15 @@ def plot_europe_isobars_hl(
     # ── Derive time label ─────────────────────────────────────────────────
     if df_geo is not None and not df_geo.empty:
         obs_times = pd.to_datetime(df_geo["valid"]).dropna()
-        time_label = obs_times.max().strftime("%Y-%m-%d %H:%M UTC") if len(obs_times) > 0 else "unknown time"
+        if len(obs_times) > 0:
+            t_min, t_max = obs_times.min(), obs_times.max()
+            if t_min.strftime("%Y-%m-%d %H") == t_max.strftime("%Y-%m-%d %H"):
+                time_label = f"Latest METAR: {t_max.strftime('%Y-%m-%d %H:%M UTC')}"
+            else:
+                time_label = (f"METAR range: {t_min.strftime('%Y-%m-%d %H:%M')} "
+                              f"\u2013 {t_max.strftime('%H:%M')} UTC")
+        else:
+            time_label = "Latest METAR: unknown time"
     else:
         time_label = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -1130,7 +1150,15 @@ def plot_europe_enhanced_station_isobars(
     """
     # ── Derive time label from observations ───────────────────────────────
     obs_times = pd.to_datetime(df_plot["valid"]).dropna()
-    time_label = obs_times.max().strftime("%Y-%m-%d %H:%M UTC") if len(obs_times) > 0 else "unknown time"
+    if len(obs_times) > 0:
+        t_min, t_max = obs_times.min(), obs_times.max()
+        if t_min.strftime("%Y-%m-%d %H") == t_max.strftime("%Y-%m-%d %H"):
+            time_label = f"Latest METAR: {t_max.strftime('%Y-%m-%d %H:%M UTC')}"
+        else:
+            time_label = (f"METAR range: {t_min.strftime('%Y-%m-%d %H:%M')} "
+                          f"\u2013 {t_max.strftime('%H:%M')} UTC")
+    else:
+        time_label = "Latest METAR: unknown time"
 
     fig, ax, proj, data_crs = _setup_europe_map()
 
@@ -1252,7 +1280,15 @@ def plot_europe_isobars_wind(
     """
     # ── Derive time label ─────────────────────────────────────────────────
     obs_times = pd.to_datetime(df_plot["valid"]).dropna()
-    time_label = obs_times.max().strftime("%Y-%m-%d %H:%M UTC") if len(obs_times) > 0 else "unknown time"
+    if len(obs_times) > 0:
+        t_min, t_max = obs_times.min(), obs_times.max()
+        if t_min.strftime("%Y-%m-%d %H") == t_max.strftime("%Y-%m-%d %H"):
+            time_label = f"Latest METAR: {t_max.strftime('%Y-%m-%d %H:%M UTC')}"
+        else:
+            time_label = (f"METAR range: {t_min.strftime('%Y-%m-%d %H:%M')} "
+                          f"\u2013 {t_max.strftime('%H:%M')} UTC")
+    else:
+        time_label = "Latest METAR: unknown time"
 
     fig, ax, proj, data_crs = _setup_europe_map()
 
@@ -1368,7 +1404,15 @@ def plot_europe_isobars_temperature(
     """
     # ── Derive time label ─────────────────────────────────────────────────
     obs_times = pd.to_datetime(df_plot["valid"]).dropna()
-    time_label = obs_times.max().strftime("%Y-%m-%d %H:%M UTC") if len(obs_times) > 0 else "unknown time"
+    if len(obs_times) > 0:
+        t_min, t_max = obs_times.min(), obs_times.max()
+        if t_min.strftime("%Y-%m-%d %H") == t_max.strftime("%Y-%m-%d %H"):
+            time_label = f"Latest METAR: {t_max.strftime('%Y-%m-%d %H:%M UTC')}"
+        else:
+            time_label = (f"METAR range: {t_min.strftime('%Y-%m-%d %H:%M')} "
+                          f"\u2013 {t_max.strftime('%H:%M')} UTC")
+    else:
+        time_label = "Latest METAR: unknown time"
 
     # ── Panel-scaled font/symbol sizes (~75 % of single-panel constants) ─
     _ft = max(1, round(FONT_TITLE))
@@ -1528,7 +1572,15 @@ def plot_europe_isobars_temperature_humidity(
     """
     # ── Derive time label ─────────────────────────────────────────────────
     obs_times = pd.to_datetime(df_plot["valid"]).dropna()
-    time_label = obs_times.max().strftime("%Y-%m-%d %H:%M UTC") if len(obs_times) > 0 else "unknown time"
+    if len(obs_times) > 0:
+        t_min, t_max = obs_times.min(), obs_times.max()
+        if t_min.strftime("%Y-%m-%d %H") == t_max.strftime("%Y-%m-%d %H"):
+            time_label = f"Latest METAR: {t_max.strftime('%Y-%m-%d %H:%M UTC')}"
+        else:
+            time_label = (f"METAR range: {t_min.strftime('%Y-%m-%d %H:%M')} "
+                          f"\u2013 {t_max.strftime('%H:%M')} UTC")
+    else:
+        time_label = "Latest METAR: unknown time"
 
     # ── Panel font/symbol sizes ───────────────────────────────────────────
     _ft  = max(1, round(FONT_TITLE))
