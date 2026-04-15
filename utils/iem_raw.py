@@ -15,8 +15,10 @@ Notes:
              URL parameters: format=onlycomma, tz=UTC, report_type=3 (routine).
   • Outputs: pd.DataFrame with three columns — station (str), valid (datetime,
              UTC-naive), metar (str). Schema matches noaa_realtime.py output.
-  • Configuration: Timeout is hardcoded to 120 s. Missing values encoded as 'M'
-                   by IEM are dropped. Trace precipitation is passed through as 'T'.
+  • Configuration: Timeout 120 s. Station list batched at _STATION_BATCH_SIZE = 20
+                   to avoid HTTP 414 (Request-URI Too Long) on large networks.
+                   Missing values encoded as 'M' by IEM are dropped.
+                   Trace precipitation is passed through as 'T'.
 """
 
 # -----------------------------------------------------------------------------
@@ -35,6 +37,7 @@ import requests
 # -----------------------------------------------------------------------------
 _IEM_BASE_URL = "http://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?"
 _REQUEST_TIMEOUT_S = 120          # seconds; increase for large multi-station requests
+_STATION_BATCH_SIZE = 20          # max stations per request (avoids HTTP 414)
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -117,24 +120,37 @@ def fetch_iem_raw(stations: List[str], start_date: str, end_date: str) -> pd.Dat
     >>> df = fetch_iem_raw(['LGIO'], '2021-08-03', '2021-08-03')
     >>> print(df[['station', 'metar']].head(3))
     """
-    url = _build_url(stations, start_date, end_date)
-
     LOG.info("[IEM] Fetching raw METAR for %d station(s)  %s -> %s",
              len(stations), start_date, end_date)
-    LOG.info("[IEM] URL: %s", url)
 
-    try:
-        r = requests.get(url, timeout=_REQUEST_TIMEOUT_S)
-        r.raise_for_status()
-    except requests.exceptions.RequestException as exc:
-        LOG.error("[IEM] Request failed: %s", exc)
-        raise
+    # Split into batches to avoid HTTP 414 (Request-URI Too Long)
+    batches = [
+        stations[i:i + _STATION_BATCH_SIZE]
+        for i in range(0, len(stations), _STATION_BATCH_SIZE)
+    ]
+    if len(batches) > 1:
+        LOG.info("[IEM] Splitting into %d batches of <= %d stations",
+                 len(batches), _STATION_BATCH_SIZE)
 
-    df = pd.read_csv(io.StringIO(r.text))
+    frames = []
+    for batch_idx, batch in enumerate(batches):
+        url = _build_url(batch, start_date, end_date)
+        try:
+            r = requests.get(url, timeout=_REQUEST_TIMEOUT_S)
+            r.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            LOG.error("[IEM] Batch %d/%d failed: %s", batch_idx + 1, len(batches), exc)
+            raise
 
-    if df.empty:
+        batch_df = pd.read_csv(io.StringIO(r.text))
+        if not batch_df.empty:
+            frames.append(batch_df)
+
+    if not frames:
         LOG.warning("[IEM] No data returned.")
-        return df
+        return pd.DataFrame(columns=["station", "valid", "metar"])
+
+    df = pd.concat(frames, ignore_index=True)
 
     # Ensure the three expected columns exist
     for col in ("station", "valid", "metar"):
