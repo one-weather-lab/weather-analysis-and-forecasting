@@ -3,3 +3,6 @@ pandas
 matplotlib
 metpy
 requests
+scipy
+certifi
+cartopy
