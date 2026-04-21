@@ -33,13 +33,14 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 # Local
-from wyoming_raob import fetch_latest_sounding
+from wyoming_raob import fetch_latest_sounding, fetch_retrospective_sounding
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -152,6 +153,30 @@ def fetch_igra2_europe(
 # [Internal helpers]
 
 
+def _nearest_sounding_time(date_str: str, hour: int) -> tuple[str, int]:
+    """
+    Map an arbitrary target UTC hour to the nearest canonical sounding time.
+
+    Radiosondes are typically launched at 00 and 12 UTC, so any target hour
+    is snapped to the nearest of those, crossing the date boundary when the
+    target is closer to 00 UTC of the following day.
+
+    Rule:
+      hour in [0, 5]    -> (date,       00)
+      hour in [6, 17]   -> (date,       12)
+      hour in [18, 23]  -> (date + 1,   00)
+    """
+    if not 0 <= hour <= 23:
+        raise ValueError(f"hour must be in [0, 23], got {hour}")
+
+    base = datetime.strptime(date_str, "%Y-%m-%d")
+    if hour < 6:
+        return base.strftime("%Y-%m-%d"), 0
+    if hour < 18:
+        return base.strftime("%Y-%m-%d"), 12
+    return (base + timedelta(days=1)).strftime("%Y-%m-%d"), 0
+
+
 def _extract_level(df_snd: pd.DataFrame, pressure_hpa: float, column: str) -> float:
     """
     Interpolate column from a sounding DataFrame at pressure_hpa.
@@ -185,10 +210,12 @@ def _extract_level(df_snd: pd.DataFrame, pressure_hpa: float, column: str) -> fl
 
 def fetch_europe_raob_fields(
     station_meta: pd.DataFrame,
+    date_str: str | None = None,
+    hour: int | None = None,
 ) -> pd.DataFrame:
     """
-    Fetch the latest sounding for every station in station_meta and extract
-    500 hPa fields by linear interpolation on the pressure coordinate.
+    Fetch soundings for every station in station_meta and extract 500 hPa
+    fields by linear interpolation on the pressure coordinate.
 
     Requests are issued in parallel (up to ``MAX_RAOB_WORKERS`` threads).  Stations for which
     the Wyoming archive returns no sounding are silently skipped.
@@ -198,6 +225,14 @@ def fetch_europe_raob_fields(
     station_meta : pd.DataFrame
         Output of ``fetch_igra2_europe()``.  Must contain columns
         ``wmo_id``, ``latitude_deg``, ``longitude_deg``.
+    date_str : str, optional
+        Target date as ``'YYYY-MM-DD'``. When combined with ``hour``, selects
+        retrospective mode and the sounding closest to
+        ``{date_str}T{hour}:00 UTC`` (snapped to the nearest 
+        sounding hour, 00 or 12 UTC, crossing dates if necessary).
+        If ``None``, the latest available sounding is fetched per station.
+    hour : int, optional
+        Target UTC hour (0-23). Only used when ``date_str`` is also given.
 
     Returns
     -------
@@ -208,12 +243,25 @@ def fetch_europe_raob_fields(
         ``u500`` (knots), ``v500`` (knots), ``wspd500`` (knots), ``wdir500`` (°),
         ``t500`` (°C), ``td500`` (°C), ``dd500`` (°C), ``valid`` (datetime).
     """
+    retro_mode = date_str is not None and hour is not None
+    if retro_mode:
+        sounding_date, sounding_hour = _nearest_sounding_time(date_str, hour)
+        LOG.info(
+            "[RAOB] Retrospective mode — using %s %02d:00 UTC soundings "
+            "(nearest hour to %s %02d:00 UTC)",
+            sounding_date, sounding_hour, date_str, hour,
+        )
 
     def _fetch_one(row: pd.Series):
         wmo_id = row["wmo_id"]
         for attempt in range(1, RAOB_MAX_RETRIES + 1):
             try:
-                df_snd, valid_dt = fetch_latest_sounding(wmo_id)
+                if retro_mode:
+                    df_snd, valid_dt = fetch_retrospective_sounding(
+                        wmo_id, sounding_date, sounding_hour,
+                    )
+                else:
+                    df_snd, valid_dt = fetch_latest_sounding(wmo_id)
                 z500  = _extract_level(df_snd, 500, "height")
                 t500  = _extract_level(df_snd, 500, "temperature")
                 td500 = _extract_level(df_snd, 500, "dewpoint")

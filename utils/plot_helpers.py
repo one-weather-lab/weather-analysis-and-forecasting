@@ -1807,7 +1807,7 @@ def plot_europe_500hpa_stations(
               if len(valid_times) > 0 else "unknown time")
 
     ax.set_title(
-        f"500 hPa Station Plot \n Valid time: {time_label}",
+        f"500 hPa Station Plot \nValid time: {time_label}",
         fontsize=FONT_TITLE, loc="left", fontweight="bold"
     )
     n_ok = df_plot["z500_dam"].notna().sum()
