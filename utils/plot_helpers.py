@@ -831,7 +831,7 @@ def plot_europe_metar_network(
     if title_suffix:
         title_line += f"  |  {title_suffix}"
 
-    ax.set_title(title_line, fontsize=FONT_TITLE, loc="left")
+    ax.set_title(title_line, fontsize=FONT_TITLE, loc="left", fontweight="bold")
     plt.text(
         0.98, 1.02, f"{len(df)} stations",
         ha="right", va="bottom", fontsize=FONT_COUNT,
@@ -1807,14 +1807,14 @@ def plot_europe_500hpa_stations(
               if len(valid_times) > 0 else "unknown time")
 
     ax.set_title(
-        f"500 hPa Station Plot \n{time_label}",
-        fontsize=FONT_TITLE, loc="left",
+        f"500 hPa Station Plot \n Valid time: {time_label}",
+        fontsize=FONT_TITLE, loc="left", fontweight="bold"
     )
     n_ok = df_plot["z500_dam"].notna().sum()
     plt.text(
         0.98, 1.02, f"{n_ok} stations",
         ha="right", va="bottom", fontsize=FONT_COUNT,
-        transform=ax.transAxes,
+        transform=ax.transAxes, 
     )
 
     out_dir = Path(output_dir)
