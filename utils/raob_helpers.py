@@ -15,12 +15,14 @@ Notes:
              wyoming_raob using ThreadPoolExecutor (~130 European sites).
              Output is a station DataFrame ready for the plotting layer.
              Stations with no available sounding are silently skipped.
-  • Inputs:  No file inputs. Data acquired at runtime from the IGRA2 station
-             list (NCEI) and the University of Wyoming upper-air archive.
+  • Inputs:  Bundled IGRA2 station list at data/igra2-station-list.txt
+             (no network access required for station metadata).
+             Sounding data acquired at runtime from the University of Wyoming
+             upper-air archive.
   • Outputs: pd.DataFrame with one row per station containing 500 hPa
              geopotential height, wind components, temperature, and dew-point.
   • Configuration: MAX_RAOB_WORKERS, RAOB_MAX_RETRIES, RAOB_RETRY_BASE_S,
-                   IGRA2_STATION_LIST_URL.
+                   _IGRA2_STATION_LIST_PATH.
 """
 
 # -----------------------------------------------------------------------------
@@ -31,10 +33,10 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import requests
 
 # Local
 from wyoming_raob import fetch_latest_sounding
@@ -46,9 +48,8 @@ MAX_RAOB_WORKERS   = 16   # parallel threads for batch sounding fetch
 RAOB_MAX_RETRIES   = 3    # retry attempts on 503 / transient server errors
 RAOB_RETRY_BASE_S  = 2.0  # back-off base (seconds); actual = BASE * 2^(attempt-1)
 
-IGRA2_STATION_LIST_URL = (
-    "https://www.ncei.noaa.gov/pub/data/igra/igra2-station-list.txt"
-)
+# Path to the bundled IGRA2 station list (relative to this file).
+_IGRA2_STATION_LIST_PATH = Path(__file__).parent.parent / "data" / "igra2-station-list.txt"
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -67,10 +68,10 @@ def fetch_igra2_europe(
     lat_max: float = 72.0,
     lon_min: float = -25.0,
     lon_max: float = 45.0,
-    url: str = IGRA2_STATION_LIST_URL,
+    path: Path = _IGRA2_STATION_LIST_PATH,
 ) -> pd.DataFrame:
     """
-    Fetch the IGRA2 radiosonde station list and return European sites.
+    Read the bundled IGRA2 station list and return European sites.
 
     Parameters
     ----------
@@ -78,8 +79,9 @@ def fetch_igra2_europe(
         Latitude bounds in degrees North (default 30 – 72).
     lon_min, lon_max : float
         Longitude bounds in degrees East (default -25 – 45).
-    url : str
-        URL of the IGRA2 station list text file.
+    path : Path
+        Local path to the IGRA2 station-list text file
+        (default: ``data/igra2-station-list.txt`` in the project root).
 
     Returns
     -------
@@ -97,15 +99,14 @@ def fetch_igra2_europe(
     ----------
     Durre, I., Yin, X., Vose, R.S., Applequist, S., Arnfield J.,
     Korzeniewski, B. & Hundermark, B. (2016).
-    Integrated Global Radiosonde Archive (IGRA), Version 2. 
-    NOAA National Centers for Environmental Information. 
+    Integrated Global Radiosonde Archive (IGRA), Version 2.
+    NOAA National Centers for Environmental Information.
     https://doi.org/10.7289/V5X63K0Q
     """
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()
+    raw_text = Path(path).read_text(encoding="utf-8")
 
     records = []
-    for line in resp.text.splitlines():
+    for line in raw_text.splitlines():
         line = line.strip()
         if not line:
             continue
