@@ -204,7 +204,7 @@ def fetch_europe_raob_fields(
         One row per successful station, columns:
         ``station_id`` (WMO number), ``longitude``, ``latitude``,
         ``z500`` (m), ``z500_dam`` (dam),
-        ``u500`` (m/s), ``v500`` (m/s), ``wspd500`` (m/s), ``wdir500`` (°),
+        ``u500`` (knots), ``v500`` (knots), ``wspd500`` (knots), ``wdir500`` (°),
         ``t500`` (°C), ``td500`` (°C), ``dd500`` (°C), ``valid`` (datetime).
     """
 

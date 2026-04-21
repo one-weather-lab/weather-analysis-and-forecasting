@@ -17,6 +17,9 @@ Notes:
              UTC-naive), metar (str). Schema matches noaa_realtime.py output.
   • Configuration: Timeout 120 s. Station list batched at _STATION_BATCH_SIZE = 20
                    to avoid HTTP 414 (Request-URI Too Long) on large networks.
+                   A 1 s pause separates batches and failed requests are retried
+                   with exponential backoff to avoid HTTP 429 (Too Many Requests)
+                   on retrospective pulls.
                    Missing values encoded as 'M' by IEM are dropped.
                    Trace precipitation is passed through as 'T'.
 """
@@ -26,6 +29,7 @@ Notes:
 # -----------------------------------------------------------------------------
 import io
 import logging
+import time
 from datetime import datetime
 from typing import List
 
@@ -38,6 +42,9 @@ import requests
 _IEM_BASE_URL = "http://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?"
 _REQUEST_TIMEOUT_S = 120          # seconds; increase for large multi-station requests
 _STATION_BATCH_SIZE = 20          # max stations per request (avoids HTTP 414)
+_INTER_BATCH_PAUSE_S = 1.0        # delay between batches (avoids HTTP 429)
+_MAX_RETRIES = 5                  # retry attempts per batch on 429/5xx
+_BACKOFF_BASE_S = 5.0             # initial backoff; doubles each retry
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -89,6 +96,40 @@ def _build_url(stations: List[str], start_date: str, end_date: str) -> str:
         "&report_type=3"                           # routine observations
     )
 
+def _get_with_retry(url: str) -> requests.Response:
+    """
+    GET with retry/backoff on HTTP 429 and 5xx. Honors ``Retry-After`` when set.
+    """
+    backoff = _BACKOFF_BASE_S
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            r = requests.get(url, timeout=_REQUEST_TIMEOUT_S)
+            if r.status_code == 429 or 500 <= r.status_code < 600:
+                retry_after = r.headers.get("Retry-After")
+                wait_s = float(retry_after) if retry_after and retry_after.isdigit() else backoff
+                LOG.warning(
+                    "[IEM] HTTP %d on attempt %d/%d — sleeping %.1fs before retry",
+                    r.status_code, attempt, _MAX_RETRIES, wait_s,
+                )
+                time.sleep(wait_s)
+                backoff *= 2
+                continue
+            r.raise_for_status()
+            return r
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            LOG.warning(
+                "[IEM] Request error on attempt %d/%d: %s — sleeping %.1fs",
+                attempt, _MAX_RETRIES, exc, backoff,
+            )
+            time.sleep(backoff)
+            backoff *= 2
+    raise requests.exceptions.RequestException(
+        f"IEM request failed after {_MAX_RETRIES} attempts"
+    ) from last_exc
+
+
 # [Core IEM METAR fetcher]
 
 def fetch_iem_raw(stations: List[str], start_date: str, end_date: str) -> pd.DataFrame:
@@ -134,10 +175,12 @@ def fetch_iem_raw(stations: List[str], start_date: str, end_date: str) -> pd.Dat
 
     frames = []
     for batch_idx, batch in enumerate(batches):
+        if batch_idx > 0:
+            time.sleep(_INTER_BATCH_PAUSE_S)
+
         url = _build_url(batch, start_date, end_date)
         try:
-            r = requests.get(url, timeout=_REQUEST_TIMEOUT_S)
-            r.raise_for_status()
+            r = _get_with_retry(url)
         except requests.exceptions.RequestException as exc:
             LOG.error("[IEM] Batch %d/%d failed: %s", batch_idx + 1, len(batches), exc)
             raise
