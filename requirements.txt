@@ -6,3 +6,8 @@ requests
 scipy
 certifi
 cartopy
+herbie-data
+xarray
+cfgrib
+eccodes
+netcdf4

@@ -12,3 +12,8 @@ dependencies:
   - requests
   - notebook
   - ipykernel
+  - herbie-data
+  - xarray
+  - cfgrib
+  - eccodes
+  - netcdf4
