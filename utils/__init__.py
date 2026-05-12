@@ -37,6 +37,20 @@ from .contouring_helpers import (
 )
 
 # -----------------------------------------------------------------------------
+# Data fetching — GFS analysis
+# -----------------------------------------------------------------------------
+from .herbie_gfs import fetch_gfs_analysis
+
+# -----------------------------------------------------------------------------
+# Diagnostics — GFS analysis
+# -----------------------------------------------------------------------------
+from .gfs_diagnostics import (
+    compute_temperature_advection,
+    compute_relative_vorticity,
+    compute_wind_speed,
+)
+
+# -----------------------------------------------------------------------------
 # Data fetching — upper air
 # -----------------------------------------------------------------------------
 from .wyoming_raob import (
@@ -72,6 +86,26 @@ from .plot_helpers import (
     plot_europe_isobars_temperature_humidity,
     # Upper-air station plot
     plot_europe_500hpa_stations,
+    # Upper-air maps (GFS analysis)
+    plot_850hpa_gph_temperature_wind,
+    plot_850hpa_temperature_advection,
+    plot_700hpa_relative_humidity,
+    plot_500hpa_gph,
+    plot_500hpa_relative_vorticity,
+    plot_500hpa_relative_vorticity_advection,
+    plot_250hpa_jet,
+    plot_gfs_surface_chart,
+    plot_upper_air_overview,
+    # Skew-T diagrams
+    init_skewt_figure,
+    add_skewt_mixing_lines,
+    add_skewt_dry_adiabats,
+    add_skewt_moist_adiabats,
+    plot_skewt_sounding,
+    plot_skewt_parcel_diagnosis,
+    plot_skewt_convective_levels,
+    plot_skewt_instability_panel,
+    plot_skewt_winds,
 )
 
 __all__ = [
@@ -119,8 +153,33 @@ __all__ = [
     "plot_europe_isobars_wind",
     "plot_europe_isobars_temperature",
     "plot_europe_isobars_temperature_humidity",
-    "plot_europe_upper_air",
     "plot_maxmin_points",
     # plot_helpers — upper-air station plot
     "plot_europe_500hpa_stations",
+    # herbie_gfs
+    "fetch_gfs_analysis",
+    # gfs_diagnostics
+    "compute_temperature_advection",
+    "compute_relative_vorticity",
+    "compute_wind_speed",
+    # plot_helpers — upper-air maps (GFS analysis)
+    "plot_850hpa_gph_temperature_wind",
+    "plot_850hpa_temperature_advection",
+    "plot_700hpa_relative_humidity",
+    "plot_500hpa_gph",
+    "plot_500hpa_relative_vorticity",
+    "plot_500hpa_relative_vorticity_advection",
+    "plot_250hpa_jet",
+    "plot_gfs_surface_chart",
+    "plot_upper_air_overview",
+    # plot_helpers — skew-T diagrams
+    "init_skewt_figure",
+    "add_skewt_mixing_lines",
+    "add_skewt_dry_adiabats",
+    "add_skewt_moist_adiabats",
+    "plot_skewt_sounding",
+    "plot_skewt_parcel_diagnosis",
+    "plot_skewt_convective_levels",
+    "plot_skewt_instability_panel",
+    "plot_skewt_winds",
 ]
