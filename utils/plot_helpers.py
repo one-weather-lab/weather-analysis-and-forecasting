@@ -1,31 +1,15 @@
 #!/usr/bin/env python3
 """
 Script Name: plot_helpers.py
-Purpose: Surface and upper-air map visualizations for METAR and radiosonde networks.
-         Isobars, isotherms, station models, and 500 hPa station plots.
+Purpose: Surface and upper-air map visualizations for the European domain.
+         Renders station models, isobar/isotherm contours, and GFS upper-air
+         fields (850, 700, 500, and 250 hPa; surface analysis) as publication-quality
+         PNGs. Covers both Greece-scale and continental-scale domains.
 
 Author(s): Christos Giannaros, One Weather Lab, University of Ioannina <chris.giannaros@uoi.gr>
-Last updated: 2026-04-13
-Version: 2.0.0
+Last updated: 2026-05-12
+Version: 3.0.0
 License: MIT
-
-Notes:
-  • Inputs:  (1) Decoded, QC-passed METAR DataFrame (station, valid, temp_c, relh,
-                 wspd, wdir, u_kt, v_kt) + OurAirports coordinate table for surface maps.
-             (2) Pre-gridded fields (grid_lon, grid_lat, mslp_grid, temp_grid,
-                 z500_grid) produced by contouring_helpers.py for contour-based
-                 isobar, isotherm, and upper-air map functions.
-             (3) RAOB DataFrame from fetch_europe_raob_fields() (raob_helpers.py)
-                 for the 500 hPa station plot.
-  • Outputs: pd.DataFrame (one representative row per station, merged with
-             coordinates); PNG figures saved to the specified output directory.
-  • Configuration: All tunable values are module-level constants: figure size,
-                   DPI, wind-barb length, label offsets, font sizes and scale
-                   factors (FONT_SCALE_*, BARB_SCALE_*, LABEL_SCALE_*), thinning
-                   radii, Lambert Conformal projection parameters
-                   (PROJ_CENTRAL_LON/LAT, PROJ_STD_PARALLELS), and pressure
-                   center detection parameters (N_SIZE, HL_MIN_SEP_DEG,
-                   ISOTHERM_MIN_AREA_KM2).
 """
 
 # -----------------------------------------------------------------------------
@@ -42,11 +26,14 @@ import logging
 
 import matplotlib.pyplot as plt
 import matplotlib.collections as mcoll
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import numpy as np
 import pandas as pd
-from scipy.ndimage import maximum_filter, minimum_filter
+import xarray as xr
+from scipy.ndimage import gaussian_filter, maximum_filter, minimum_filter
 from metpy.calc import reduce_point_density
 
 # -----------------------------------------------------------------------------
@@ -101,9 +88,105 @@ FONT_TITLE   = 22            # map title
 FONT_SCALE_STATION  = 0.80   # T / RH labels on continental network plot (≈ 6 pt when FONT_LABEL=15)
 FONT_SCALE_MMSLP_RAW  = 0.53   # raw MSLP station text  (≈ 8 pt when FONT_LABEL=15)
 FONT_SCALE_CONTOUR  = 0.60   # isobar / isotherm inline labels (≈ 9 pt)
+FONT_SCALE_UPPER_TITLE  = 0.75    # title font scale relative to FONT_TITLE
+FONT_SCALE_UPPER_CBAR   = 0.80    # colorbar label/tick font scale relative to FONT_LABEL
 
 # [Barb scale factors]
 BARB_SCALE_STATION  = 0.80   # barb length scale for continental network plot
+VRB_SCATTER_MULTIPLIER          = 1.6  # VRB scatter size multiplier (most charts)
+VRB_SCATTER_MULTIPLIER_ENHANCED = 1.4  # VRB scatter size multiplier (enhanced station chart)
+BARB_SCALE_UPPER       = 0.65    # barb length scale for gfs analysis upper-air charts
+
+# [850 hPa GPH / Temperature / Wind chart]
+GPH_INTERVAL_850      = 3       # geopotential height contour interval (dam)
+ISOTHERM_INTERVAL_850 = 1     # temperature fill interval (°C)
+TEMP_ADV_INTERVAL_850 = 0.5  # temperature advection fill interval (°C per 1 h)
+TEMP_MIN_850          = -30     # lower bound of temperature fill range (°C)
+TEMP_MAX_850          = 30      # upper bound of temperature fill range (°C)
+TEMP_ADV_MIN_850     = -5      # lower bound of temperature advection fill range (°C per 1 h)
+TEMP_ADV_MAX_850     = 5       # upper bound of temperature advection fill range (°C per 1 h)
+SIGMA_850             = 3       # Gaussian smoothing sigma (grid points)
+GPH_LINEWIDTH_850     = 1.2     # GPH contour line width
+GPH_LABEL_STRIDE_850  = 2       # label every Nth GPH contour level
+CBAR_TEMP_TICK_850          = 5     # colorbar tick spacing
+CBAR_TEMP_ADV_TICK_850          = 1     # colorbar tick spacing
+
+# [Upper-air smoothing and MSLP chart]
+SIGMA_UPPER    = 3   # Gaussian smoothing sigma for upper-air GFS fields (grid points)
+MSLP_INTERVAL  = 4   # MSLP contour interval for GFS surface chart (hPa)
+SIGMA_SURFACE  = 3   # Gaussian smoothing sigma for MSLP
+T2M_INTERVAL   = 4   # 2 m temperature contour interval for GFS surface chart (°C)
+
+# [GPH contour intervals and style — by pressure level]
+GPH_INTERVAL_700      = 3     # 700 hPa GPH contour interval (dam)
+GPH_INTERVAL_500      = 6     # 500 hPa GPH contour interval (dam)
+GPH_INTERVAL_250      = 12    # 250 hPa GPH contour interval (dam)
+GPH_LINEWIDTH_UPPER   = 1.0   # GPH line width for single-panel upper-air charts
+GPH_LINEWIDTH_500     = 1.4   # GPH line width for standalone 500 hPa chart
+GPH_LABEL_STRIDE      = 2     # label every Nth GPH level (most charts)
+GPH_LABEL_STRIDE_500  = 1     # label every GPH level on standalone 500 hPa chart
+GPH_LABEL_STRIDE_250  = 1     # label every GPH level on standalone 250 hPa chart
+
+# [Temperature and RH contour ranges]
+TEMP_ISOTHERM_MIN     = -40   # lower bound of surface temperature contour range (°C)
+TEMP_ISOTHERM_MAX     = 45    # upper bound (exclusive) of surface temperature contour range (°C)
+RH_CONTOUR_LEVELS_700 = [70, 80, 90, 100]  # 700 hPa RH fill boundaries (%) — no fill below 65
+
+# [Jet stream — 250 hPa]
+ISOTACH_MIN        = 30       # minimum isotach fill level (m/s)
+ISOTACH_MAX        = 100      # exclusive upper bound for isotach fill (m/s)
+ISOTACH_INTERVAL   = 2       # isotach fill interval (m/s)
+CBAR_ISOTACH_TICK_250 = 10      # isotach colorbar tick spacing (m/s)
+JET_CORE_LEVEL     = 50.0     # jet-core emphasis contour level (m/s)
+JET_CORE_COLOR     = "darkred"  # jet-core contour color
+JET_CORE_LINEWIDTH = 2.0      # jet-core contour line width
+
+# [Colorbar geometry]
+CBAR_SIZE         = "2.5%"  # colorbar strip width as fraction of axes width
+CBAR_PAD          = 0.2     # colorbar padding from axes edge (inches)
+
+# [Temperature advection and vorticity scaling and color levels]
+TEMP_ADV_TIME_SCALE   = 3600 * 1  # K/s → K per 1 h
+VORTICITY_DISPLAY_SCALE = 1e5     # vorticity scaling for display (×10⁻⁵ s⁻¹)
+VORT_MAX_500          = 40        # half-range for ±symmetric 500 hPa vorticity colorbar (×10⁻⁵)
+VORT_INTERVAL_500     = 1         # relative vorticity fill interval (×10⁻⁵ s⁻¹)
+CBAR_VORT_TICK_500    = 10        # colorbar tick spacing for 500 hPa vorticity (×10⁻⁵ s⁻¹)
+
+_pvort_cmap = LinearSegmentedColormap.from_list(
+    "pvort_div",
+    [
+        (0.00, "#555555"),
+        (0.20, "#999999"),
+        (0.38, "#d4d4d4"),
+        (0.50, "#f8f5e8"),
+        (0.60, "#ffffc0"),
+        (0.70, "#ffff00"),
+        (0.78, "#ffc200"),
+        (0.85, "#ff8c00"),
+        (0.91, "#ff3300"),
+        (0.95, "#cc0000"),
+        (0.98, "#800040"),
+        (1.00, "#1a0040"),
+    ],
+    N=256,
+)
+
+# [4-panel upper-air overview layout]
+FIG_SIZE_SCALE_OVERVIEW      = 1.2    # figure size scale relative to FIG_SIZE_IN
+FIG_HEIGHT_OVERVIEW          = 14     # figure height in inches for 4-panel overview (overrides FIG_SIZE_IN[1] × scale)
+SUBPLOT_WSPACE_OVERVIEW      = 0.07   # horizontal subplot spacing (2- and 4-panel)
+SUBPLOT_HSPACE_OVERVIEW      = 0.02   # vertical subplot spacing (4-panel only)
+FONT_SCALE_TITLE_OVERVIEW    = 0.60   # per-panel title font scale relative to FONT_TITLE
+FONT_SCALE_CONTOUR_OVERVIEW  = 0.60   # additional contour-label font scale for 4-panel
+BARB_STRIDE_SCALE_OVERVIEW   = 2      # barb thinning stride multiplier for 4-panel
+BARB_SCALE_OVERVIEW          = 0.70   # barb length scale for 4-panel relative to BARB_SCALE_STATION
+FONT_SCALE_SUPTITLE_OVERVIEW = 0.65   # suptitle font scale relative to FONT_TITLE
+FIG_DPI_OVERVIEW             = 200    # output DPI for 4-panel overview (lower than single-panel)
+
+# [500 hPa RAOB station plot]
+BARB_SCALE_500_RAOB  = 0.80  # barb length scale for 500 hPa RAOB station plot
+RAOB_LABEL_LAT_UPPER = 0.40  # upper label latitude offset (degrees)
+RAOB_LABEL_LAT_LOWER = 0.40  # lower label latitude offset (degrees)
 
 # [Label scale factors — Europe map covers ~4× the lat/lon range of Greece]
 LABEL_SCALE_STATION = 3.0    # multiplier for lon/lat label offsets on continental network plot
@@ -114,10 +197,20 @@ PROJ_CENTRAL_LAT    = 50          # central latitude  (degrees North)
 PROJ_STD_PARALLELS  = (35, 65)    # standard parallels
 
 # [Pressure center detection]
-N_SIZE          = 25         # neighbourhood size for extremum filter
-SYMBOL_SIZE     = 20         # font size for H/L symbol text
-HL_MIN_SEP_DEG  = 25.0       # minimum separation between H/L centers (degrees)
-ISOTHERM_MIN_AREA_KM2 = 200000  # suppress closed isotherms enclosing less than this area (km²)
+N_SIZE                = 25       # neighbourhood size for extremum filter
+SYMBOL_SIZE           = 20       # font size for H/L symbol text
+HL_MIN_SEP_DEG        = 25.0     # minimum separation between H/L centers (degrees)
+HL_VALUE_LAT_OFFSET   = 0.8      # latitude offset below H/L symbol for pressure value label (degrees)
+HL_VALUE_FONT_OFFSET  = 2        # font size reduction for pressure value label relative to symbol
+HL_BOUNDARY_MARGIN_DEG = 2.5     # inward margin (degrees) applied to all edges before placing H/L symbols
+ISOTHERM_MIN_AREA_KM2 = 200000   # suppress closed isotherms enclosing less than this area (km²)
+CLOSED_CONTOUR_ATOL   = 0.05     # coordinate tolerance for closed-contour detection (degrees)
+
+# [GFS grid spacing and derived thinning radius for wind barbs]
+_GFS_GRID_DEG    = 0.25
+_KM_PER_DEG      = 111.0    # approximate km per degree latitude (barb stride)
+_KM_PER_DEG_EQUAT = 111.32  # equatorial km per degree, WGS84 (shoelace area)
+_BARB_STRIDE     = max(1, round(THINNING_RADIUS_KM / (_GFS_GRID_DEG * _KM_PER_DEG)))
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -178,15 +271,15 @@ def _suppress_small_closed_contours(
             if len(seg) < 3:
                 kept_segs.append(seg)
                 continue
-            is_closed = np.allclose(seg[0], seg[-1], atol=0.05)
+            is_closed = np.allclose(seg[0], seg[-1], atol=CLOSED_CONTOUR_ATOL)
             if not is_closed:
                 kept_segs.append(seg)
                 continue
             # Area via shoelace on km coordinates
-            x, y = seg[:, 0], seg[:, 1]
-            mean_lat = float(np.mean(y))
-            kx = x * 111.32 * np.cos(np.radians(mean_lat))
-            ky = y * 111.32
+            seg_lon, seg_lat = seg[:, 0], seg[:, 1]
+            mean_lat = float(np.mean(seg_lat))
+            kx = seg_lon * _KM_PER_DEG_EQUAT * np.cos(np.radians(mean_lat))
+            ky = seg_lat * _KM_PER_DEG_EQUAT
             area_km2 = 0.5 * abs(
                 np.dot(kx, np.roll(ky, -1)) - np.dot(ky, np.roll(kx, -1))
             )
@@ -198,6 +291,70 @@ def _suppress_small_closed_contours(
             kept_segs, colors=color, linewidths=linewidth, transform=data_crs,
         )
         ax.add_collection(lc)
+
+
+def _setup_europe_map(ax=None, proj=None):
+    """
+    Create or configure a Europe-domain map.
+
+    If *ax* is None a new figure and axes are created; otherwise the
+    existing axes are configured in place.
+
+    Parameters
+    ----------
+    proj : cartopy.crs.Projection, optional
+        Map projection. Defaults to Lambert Conformal centred at
+        PROJ_CENTRAL_LON / PROJ_CENTRAL_LAT.
+    
+    Returns
+    -------
+    tuple (fig, ax, proj, data_crs)
+    """
+    if proj is None:
+        proj = ccrs.LambertConformal(
+            central_longitude=PROJ_CENTRAL_LON,
+            central_latitude=PROJ_CENTRAL_LAT,
+            standard_parallels=PROJ_STD_PARALLELS,
+        )
+    data_crs = ccrs.PlateCarree()
+
+    if ax is None:
+        fig = plt.figure(figsize=FIG_SIZE_IN)
+        fig.patch.set_facecolor("w")
+        ax = plt.axes(projection=proj)
+    else:
+        fig = ax.figure
+
+    ax.set_extent(EUROPE_EXTENT, crs=data_crs)
+
+    ax.add_feature(cfeature.COASTLINE.with_scale("50m"), linewidth=0.9)
+    ax.add_feature(cfeature.BORDERS.with_scale("50m"), linewidth=0.6)
+    ax.add_feature(cfeature.LAND.with_scale("50m"), facecolor="lightgray", alpha=0.4)
+    ax.gridlines(draw_labels=False, linewidth=0.3, color="gray", alpha=0.4, linestyle="--")
+
+    return fig, ax, proj, data_crs
+
+
+def _smooth_field(data_2d: np.ndarray, sigma: float) -> np.ndarray:
+    """
+    Apply NaN-safe Gaussian smoothing to a 2-D field.
+    """
+    nan_mask = np.isnan(data_2d)
+    filled   = data_2d.copy().astype(float)
+    if nan_mask.any():
+        filled[nan_mask] = float(np.nanmean(data_2d))
+    smoothed = gaussian_filter(filled, sigma=sigma)
+    smoothed[nan_mask] = np.nan
+    return smoothed
+
+
+def _gfs_title(field_label: str, valid_time: str) -> str:
+    """
+    Format a consistent GFS-analysis map title.
+    """
+    vt = pd.Timestamp(valid_time, tz="UTC").strftime("%Y-%m-%d %H:%M UTC")
+    return f"{field_label}\nGFS analysis valid: {vt}"
+
 
 # [Loaders]
 
@@ -529,8 +686,9 @@ def plot_maxmin_points(
         lat_val = mesh_lat[iy, ix]
 
         # Skip if outside current map extent
-        if not (lon_min_e <= lon_val <= lon_max_e and
-                lat_min_e <= lat_val <= lat_max_e):
+        margin_deg = HL_BOUNDARY_MARGIN_DEG
+        if not (lon_min_e + margin_deg <= lon_val <= lon_max_e - margin_deg and
+                lat_min_e + margin_deg <= lat_val <= lat_max_e - margin_deg):
             continue
 
         val = data[iy, ix]
@@ -542,13 +700,13 @@ def plot_maxmin_points(
             transform=transform, zorder=10,
         )
         ax.text(
-            lon_val, lat_val - 0.8, f"{val:.0f}",
-            color=color, fontsize=symbol_size - 2,
+            lon_val, lat_val - HL_VALUE_LAT_OFFSET, f"{val:.0f}",
+            color=color, fontsize=symbol_size - HL_VALUE_FONT_OFFSET,
             ha="center", va="top",
             transform=transform, zorder=10,
         )
 
-# [Output / Export]
+# [Surface maps]
 
 def plot_greece_metar_network(
     df_plot: pd.DataFrame,
@@ -625,7 +783,7 @@ def plot_greece_metar_network(
     if not df_vrb.empty:
         ax.scatter(
             df_vrb["lon"], df_vrb["lat"],
-            s=np.clip(df_vrb["wspd"] * 1.6, VRB_SCATTER_MIN_S, VRB_SCATTER_MAX_S),
+            s=np.clip(df_vrb["wspd"] * VRB_SCATTER_MULTIPLIER, VRB_SCATTER_MIN_S, VRB_SCATTER_MAX_S),
             c="black", transform=proj, label="VRB",
         )
 
@@ -849,41 +1007,6 @@ def plot_europe_metar_network(
     plt.show()
 
     return str(out_path.resolve())
-
-
-def _setup_europe_map(ax=None):
-    """
-    Create or configure a Lambert Conformal Europe-domain map.
-
-    If *ax* is None a new figure and axes are created; otherwise the
-    existing axes are configured in place.
-
-    Returns
-    -------
-    tuple (fig, ax, proj, data_crs)
-    """
-    proj = ccrs.LambertConformal(
-        central_longitude=PROJ_CENTRAL_LON,
-        central_latitude=PROJ_CENTRAL_LAT,
-        standard_parallels=PROJ_STD_PARALLELS,
-    )
-    data_crs = ccrs.PlateCarree()
-
-    if ax is None:
-        fig = plt.figure(figsize=FIG_SIZE_IN)
-        fig.patch.set_facecolor("w")
-        ax = plt.axes(projection=proj)
-    else:
-        fig = ax.figure
-
-    ax.set_extent(EUROPE_EXTENT, crs=data_crs)
-
-    ax.add_feature(cfeature.COASTLINE.with_scale("50m"), linewidth=0.5)
-    ax.add_feature(cfeature.BORDERS.with_scale("50m"), linewidth=0.3)
-    ax.add_feature(cfeature.LAND.with_scale("50m"), facecolor="lightgray", alpha=0.4)
-    ax.gridlines(draw_labels=False, linewidth=0.3, color="gray", alpha=0.4, linestyle="--")
-
-    return fig, ax, proj, data_crs
 
 
 def plot_europe_mslp_raw(
@@ -1129,7 +1252,7 @@ def plot_europe_enhanced_station_isobars(
     ----------
     df_plot : pd.DataFrame
         Plot-ready observation DataFrame from ``build_europe_network_plot_df()``.
-        Must contain ``longitude``, ``latitude``, ``valid``, ``temp_c``,
+        Must contain ``lon``, ``lat``, ``valid``, ``temp_c``,
         ``wdir``, ``wspd``, ``u_kt``, ``v_kt``.
     grid_lon : np.ndarray
         1-D array of grid longitudes (degrees East).
@@ -1196,7 +1319,7 @@ def plot_europe_enhanced_station_isobars(
         ax.scatter(
             df_thin.loc[is_vrb, "lon"],
             df_thin.loc[is_vrb, "lat"],
-            s=np.clip(df_thin.loc[is_vrb, "wspd"] * 1.4, VRB_SCATTER_MIN_S, VRB_SCATTER_MAX_S),
+            s=np.clip(df_thin.loc[is_vrb, "wspd"] * VRB_SCATTER_MULTIPLIER_ENHANCED, VRB_SCATTER_MIN_S, VRB_SCATTER_MAX_S),
             c="black", transform=data_crs, label="VRB",
         )
 
@@ -1259,7 +1382,7 @@ def plot_europe_isobars_wind(
     ----------
     df_plot : pd.DataFrame
         Plot-ready observation DataFrame from ``build_europe_network_plot_df()``.
-        Must contain ``longitude``, ``latitude``, ``valid``, ``wdir``,
+        Must contain ``lon``, ``lat``, ``valid``, ``wdir``,
         ``wspd``, ``u_kt``, ``v_kt``.
     grid_lon : np.ndarray
         1-D array of grid longitudes (degrees East).
@@ -1330,7 +1453,7 @@ def plot_europe_isobars_wind(
         ax.scatter(
             df_thin.loc[is_vrb, "lon"],
             df_thin.loc[is_vrb, "lat"],
-            s=np.clip(df_thin.loc[is_vrb, "wspd"] * 1.6, VRB_SCATTER_MIN_S, VRB_SCATTER_MAX_S),
+            s=np.clip(df_thin.loc[is_vrb, "wspd"] * VRB_SCATTER_MULTIPLIER, VRB_SCATTER_MIN_S, VRB_SCATTER_MAX_S),
             c="black", transform=data_crs,
         )
     if is_calm.any():
@@ -1378,7 +1501,7 @@ def plot_europe_isobars_temperature(
     ----------
     df_plot : pd.DataFrame
         Plot-ready observation DataFrame from ``build_europe_network_plot_df()``.
-        Must contain ``longitude``, ``latitude``, ``valid``, ``wdir``,
+        Must contain ``lon``, ``lat``, ``valid``, ``wdir``,
         ``wspd``, ``u_kt``, ``v_kt``.
     grid_lon : np.ndarray
         1-D array of grid longitudes (degrees East).
@@ -1432,7 +1555,7 @@ def plot_europe_isobars_temperature(
         1, 2,
         figsize=(FIG_SIZE_IN[0] * 2, FIG_SIZE_IN[1]),
         subplot_kw={"projection": proj},
-        gridspec_kw={"wspace": 0.04},
+        gridspec_kw={"wspace": SUBPLOT_WSPACE_OVERVIEW},
     )
     fig.patch.set_facecolor("w")
 
@@ -1479,7 +1602,7 @@ def plot_europe_isobars_temperature(
         ax1.scatter(
             df_thin.loc[is_vrb, "lon"],
             df_thin.loc[is_vrb, "lat"],
-            s=np.clip(df_thin.loc[is_vrb, "wspd"] * 1.6, VRB_SCATTER_MIN_S, VRB_SCATTER_MAX_S),
+            s=np.clip(df_thin.loc[is_vrb, "wspd"] * VRB_SCATTER_MULTIPLIER, VRB_SCATTER_MIN_S, VRB_SCATTER_MAX_S),
             c="black", transform=data_crs,
         )
     if is_calm.any():
@@ -1496,7 +1619,7 @@ def plot_europe_isobars_temperature(
     )
 
     # ── Panel 2 — temperature isotherms only ─────────────────────────────
-    isotherm_levels = np.arange(-40, 45, isotherm_interval)
+    isotherm_levels = np.arange(TEMP_ISOTHERM_MIN, TEMP_ISOTHERM_MAX, isotherm_interval)    
     cs_t = ax2.contour(
         grid_lon, grid_lat, temp_grid,
         levels=isotherm_levels, colors="#cc0000", linewidths=1.4,
@@ -1534,10 +1657,10 @@ def plot_europe_isobars_temperature_humidity(
     """
     Two-panel figure extending ``plot_europe_isobars_temperature``:
 
-    * **Left** — MSLP isobars, H/L pressure centers, thinned wind barbs, and
+    * Left: MSLP isobars, H/L pressure centers, thinned wind barbs, and
       thinned station relative humidity (%) in blue at the lower-left of each
       station position, matching the layout of ``plot_europe_metar_network``.
-    * **Right** — temperature isotherms only (red).
+    * Right: temperature isotherms only (red).
 
     The observation time is derived automatically from the ``valid`` column
     of *df_plot* and included in each panel title.
@@ -1546,7 +1669,7 @@ def plot_europe_isobars_temperature_humidity(
     ----------
     df_plot : pd.DataFrame
         Plot-ready observation DataFrame from ``build_europe_network_plot_df()``.
-        Must contain ``longitude``, ``latitude``, ``valid``, ``wdir``,
+        Must contain ``lon``, ``lat``, ``valid``, ``wdir``,
         ``wspd``, ``u_kt``, ``v_kt``, ``relh``.
     grid_lon : np.ndarray
         1-D array of grid longitudes (degrees East).
@@ -1600,7 +1723,7 @@ def plot_europe_isobars_temperature_humidity(
         1, 2,
         figsize=(FIG_SIZE_IN[0] * 2, FIG_SIZE_IN[1]),
         subplot_kw={"projection": proj},
-        gridspec_kw={"wspace": 0.04},
+        gridspec_kw={"wspace": SUBPLOT_WSPACE_OVERVIEW},
     )
     fig.patch.set_facecolor("w")
 
@@ -1644,7 +1767,7 @@ def plot_europe_isobars_temperature_humidity(
     if is_vrb.any():
         ax1.scatter(
             df_thin.loc[is_vrb, "lon"], df_thin.loc[is_vrb, "lat"],
-            s=np.clip(df_thin.loc[is_vrb, "wspd"] * 1.6, VRB_SCATTER_MIN_S, VRB_SCATTER_MAX_S),
+            s=np.clip(df_thin.loc[is_vrb, "wspd"] * VRB_SCATTER_MULTIPLIER, VRB_SCATTER_MIN_S, VRB_SCATTER_MAX_S),
             c="black", transform=data_crs,
         )
     if is_calm.any():
@@ -1669,7 +1792,7 @@ def plot_europe_isobars_temperature_humidity(
     )
 
     # ── Panel 2 — temperature isotherms only ─────────────────────────────
-    isotherm_levels = np.arange(-40, 45, isotherm_interval)
+    isotherm_levels = np.arange(TEMP_ISOTHERM_MIN, TEMP_ISOTHERM_MAX, isotherm_interval)
     cs_t = ax2.contour(
         grid_lon, grid_lat, temp_grid,
         levels=isotherm_levels, colors="#cc0000", linewidths=1.4,
@@ -1693,6 +1816,110 @@ def plot_europe_isobars_temperature_humidity(
 
     return str(out_path.resolve())
 
+def plot_gfs_surface_chart(
+    ds: xr.Dataset,
+    mslp_interval: float = MSLP_INTERVAL,
+    sigma_mslp: float = SIGMA_SURFACE,
+    t2m_interval: float = T2M_INTERVAL,
+    output_dir: str = "../outputs",
+    show: bool = True,
+) -> str:
+    """
+    GFS-analysis surface chart: MSLP isobars, H/L centers, 10 m wind barbs,
+    and 2 m temperature contours (red dashed).
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        GFS analysis dataset (must contain ``t_2m`` in Kelvin).
+    mslp_interval : float
+        MSLP contour interval (hPa).
+    sigma_mslp : float
+        Gaussian smoothing sigma applied to both MSLP and T2m.
+    t2m_interval : float
+        2 m temperature contour interval (°C).
+    output_dir : str
+        Directory to save the figure.
+
+    Returns
+    -------
+    str
+        Absolute path of the saved PNG.
+    """
+    valid_time = ds.attrs.get("valid_time", "unknown")
+    lon        = ds["longitude"].values
+    lat        = ds["latitude"].values
+    lon_2d, lat_2d = np.meshgrid(lon, lat)
+
+    mslp_hpa = _smooth_field(ds["prmsl"].values / 100.0, sigma_mslp)
+
+    fig, ax, proj, data_crs = _setup_europe_map(proj=ccrs.PlateCarree())
+
+    # ── MSLP isobars ────────────────────────────────────────────────────────
+    p_min  = np.floor(np.nanmin(mslp_hpa) / mslp_interval) * mslp_interval
+    p_max  = np.ceil( np.nanmax(mslp_hpa) / mslp_interval) * mslp_interval
+    p_levs = np.arange(p_min, p_max + mslp_interval, mslp_interval)
+    cs_p   = ax.contour(
+        lon_2d, lat_2d, mslp_hpa,
+        levels=p_levs, colors="black", linewidths=1.2,
+        transform=data_crs,
+    )
+    ax.clabel(
+        cs_p, cs_p.levels[::GPH_LABEL_STRIDE], fmt="%d",
+        fontsize=max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR)), inline=True,
+    )
+
+    # ── H/L pressure centers ────────────────────────────────────────────────
+    plot_maxmin_points(ax, lon, lat, mslp_hpa, "max",
+                       n_size=N_SIZE, symbol_size=SYMBOL_SIZE,
+                       min_sep_deg=HL_MIN_SEP_DEG, transform=data_crs)
+    plot_maxmin_points(ax, lon, lat, mslp_hpa, "min",
+                       n_size=N_SIZE, symbol_size=SYMBOL_SIZE,
+                       min_sep_deg=HL_MIN_SEP_DEG, transform=data_crs)
+
+    # ── 2 m temperature contours (red dashed) ───────────────────────────────
+    t2m_c  = _smooth_field(ds["t_2m"].values - 273.15, sigma_mslp)
+    t_min  = np.floor(np.nanmin(t2m_c) / t2m_interval) * t2m_interval
+    t_max  = np.ceil( np.nanmax(t2m_c) / t2m_interval) * t2m_interval
+    t_levs = np.arange(t_min, t_max + t2m_interval, t2m_interval)
+    cs_t   = ax.contour(
+        lon_2d, lat_2d, t2m_c,
+        levels=t_levs, colors="red", linewidths=0.8,
+        linestyles="dashed", transform=data_crs,
+    )
+    ax.clabel(
+        cs_t, cs_t.levels[::2], fmt="%d°C",
+        fontsize=max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR)), inline=True,
+    )
+
+    # ── 10 m wind barbs ─────────────────────────────────────────────────────
+    st = _BARB_STRIDE
+    ax.barbs(
+        lon_2d[::st, ::st], lat_2d[::st, ::st],
+        ds["u_10m"].values[::st, ::st], ds["v_10m"].values[::st, ::st],
+        length=BARB_LENGTH * BARB_SCALE_UPPER,
+        transform=data_crs, color="black",
+    )
+
+    ax.set_title(
+        _gfs_title("MSLP [black contours, hPa], 10 m Wind [black barbs], "
+                   "and 2 m Temperature [red dashed contours, °C]", valid_time),
+        fontsize=FONT_TITLE * FONT_SCALE_UPPER_TITLE, loc="left", fontweight="bold",
+    )
+
+    out_dir  = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = pd.to_datetime("now", utc=True).strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"gfs_surface_chart_{timestamp}.png"
+    fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+    return str(out_path.resolve())
+
+
 # [Upper-air station plot]
 
 def plot_europe_500hpa_stations(
@@ -1703,11 +1930,11 @@ def plot_europe_500hpa_stations(
     Upper-air station plot at 500 hPa for the European radiosonde network.
 
     Each station is drawn with:
-    - Upper-left  — temperature (°C, red).
-    - Upper-right — geopotential height in decameters (dam), coded as the
+    - Upper-left: temperature (°C, red).
+    - Upper-right: geopotential height in decameters (dam), coded as the
                     last 3 digits (e.g. 576 for 5760 m).
-    - Lower-left  — dew-point depression (T - Td, °C), rounded to 1 °C.
-    - Wind barbs  — 500 hPa wind in knots.
+    - Lower-left: dew-point depression (T - Td, °C), rounded to 1 °C.
+    - Wind barbs: 500 hPa wind in knots.
 
     Parameters
     ----------
@@ -1744,8 +1971,8 @@ def plot_europe_500hpa_stations(
 
     _fs = max(1, round(FONT_LABEL * FONT_SCALE_STATION))
     _lo = LABEL_LON_OFFSET * LABEL_SCALE_STATION
-    _lu = 0.40
-    _ll = 0.40
+    _lu = RAOB_LABEL_LAT_UPPER
+    _ll = RAOB_LABEL_LAT_LOWER
 
     # Thin stations to avoid crowding in dense regions (e.g. Central Europe)
     if RAOB_THINNING_RADIUS_KM > 0:
@@ -1766,7 +1993,7 @@ def plot_europe_500hpa_stations(
             df_wind["latitude"].values,
             df_wind["u500"].values,
             df_wind["v500"].values,
-            length=BARB_LENGTH * BARB_SCALE_STATION * 0.80,
+            length=BARB_LENGTH * BARB_SCALE_500_RAOB,
             transform=data_crs, color="black",
         )
 
@@ -1807,7 +2034,7 @@ def plot_europe_500hpa_stations(
               if len(valid_times) > 0 else "unknown time")
 
     ax.set_title(
-        f"500 hPa Station Plot \nValid time: {time_label}",
+        f"500 hPa Station Plot\nValid time: {time_label}",
         fontsize=FONT_TITLE, loc="left", fontweight="bold"
     )
     n_ok = df_plot["z500_dam"].notna().sum()
@@ -1825,4 +2052,804 @@ def plot_europe_500hpa_stations(
                 facecolor="white", edgecolor="none")
     plt.show()
 
+    return str(out_path.resolve())
+
+# [Upper-air maps]
+
+def plot_850hpa_gph_temperature_wind(
+    ds: xr.Dataset,
+    gph_interval: float = GPH_INTERVAL_850,
+    isotherm_interval: float = ISOTHERM_INTERVAL_850,
+    sigma: float = SIGMA_UPPER,
+    output_dir: str = "../outputs",
+) -> str:
+    """
+    850 hPa geopotential height, temperature, and wind.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        GFS analysis dataset from ``fetch_gfs_analysis()``.
+    gph_interval : float
+        GPH contour interval (dam).
+    isotherm_interval : float
+        Temperature fill interval (°C).
+    sigma : float
+        Gaussian smoothing sigma applied to GPH and temperature fields.
+    output_dir : str
+        Directory to save the figure.
+
+    Returns
+    -------
+    str
+        Absolute path of the saved PNG.
+    """
+    valid_time = ds.attrs.get("valid_time", "unknown")
+    lon        = ds["longitude"].values
+    lat        = ds["latitude"].values
+    lon_2d, lat_2d = np.meshgrid(lon, lat)
+
+    gph_dam = _smooth_field(ds["gh_850"].values / 10.0, sigma)
+    temp_c  = _smooth_field(ds["t_850"].values - 273.15, sigma)
+    u_raw   = ds["u_850"].values
+    v_raw   = ds["v_850"].values
+
+    fig, ax, proj, data_crs = _setup_europe_map(proj=ccrs.PlateCarree())
+
+    # ── Temperature fill ────────────────────────────────────────────────────
+    t_levs = np.arange(TEMP_MIN_850, TEMP_MAX_850 + isotherm_interval, isotherm_interval)
+    cf = ax.contourf(
+        lon_2d, lat_2d, temp_c,
+        levels=t_levs, cmap="RdBu_r",
+        transform=data_crs, extend="both",
+    )
+    _fs = max(1, round(FONT_LABEL * FONT_SCALE_UPPER_CBAR))
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD, axes_class=plt.Axes)
+    cb = fig.colorbar(cf, cax=cax)
+    cb.set_ticks(np.arange(TEMP_MIN_850, TEMP_MAX_850 + isotherm_interval, CBAR_TEMP_TICK_850))
+    cb.set_label("[ °C ]", fontsize=_fs)
+    cb.ax.tick_params(labelsize=_fs)
+
+    # ── GPH contours (black) ────────────────────────────────────────────────
+    g_min  = np.floor(np.nanmin(gph_dam) / gph_interval) * gph_interval
+    g_max  = np.ceil( np.nanmax(gph_dam) / gph_interval) * gph_interval
+    g_levs = np.arange(g_min, g_max + gph_interval, gph_interval)
+    cs_g   = ax.contour(
+        lon_2d, lat_2d, gph_dam,
+        levels=g_levs, colors="black", linewidths=GPH_LINEWIDTH_850,
+        transform=data_crs,
+    )
+    ax.clabel(
+        cs_g, cs_g.levels[::GPH_LABEL_STRIDE_850], fmt="%d",
+        fontsize=max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR)), inline=True,
+    )
+
+    # ── Wind barbs ──────────────────────────────────────────────────────────
+    st = _BARB_STRIDE
+    ax.barbs(
+        lon_2d[::st, ::st], lat_2d[::st, ::st],
+        u_raw[::st, ::st], v_raw[::st, ::st],
+        length=BARB_LENGTH * BARB_SCALE_UPPER,
+        transform=data_crs, color="black",
+    )
+
+    ax.set_title(
+        _gfs_title("850 hPa Temperature [fill, °C], Geopotential Height [contours, dam], and Wind [barbs]", valid_time),
+        fontsize=max(1, round(FONT_TITLE * FONT_SCALE_UPPER_TITLE)), loc="left", fontweight="bold",
+    )
+
+    out_dir  = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = pd.to_datetime("now", utc=True).strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"850hpa_gph_temp_wind_{timestamp}.png"
+    fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.show()
+    return str(out_path.resolve())
+
+
+def plot_850hpa_temperature_advection(
+    ds: xr.Dataset,
+    T_adv: xr.DataArray,
+    gph_interval: float = GPH_INTERVAL_850,
+    sigma: float = SIGMA_UPPER,
+    output_dir: str = "../outputs",
+) -> str:
+    """
+    850 hPa temperature advection shading with geopotential height and wind barbs.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        GFS analysis dataset.
+    T_adv : xr.DataArray
+        Temperature advection (K/s) from ``compute_temperature_advection()``.
+    gph_interval : float
+        GPH contour interval (dam).
+    sigma : float
+        Gaussian smoothing sigma applied to GPH.
+    output_dir : str
+        Directory to save the figure.
+
+    Returns
+    -------
+    str
+        Absolute path of the saved PNG.
+    """
+    valid_time = ds.attrs.get("valid_time", "unknown")
+    lon        = ds["longitude"].values
+    lat        = ds["latitude"].values
+    lon_2d, lat_2d = np.meshgrid(lon, lat)
+
+    gph_dam    = _smooth_field(ds["gh_850"].values / 10.0, sigma)
+    adv_vals   = np.asarray(T_adv.values, dtype=float)
+    adv_scaled = adv_vals * TEMP_ADV_TIME_SCALE
+
+    fig, ax, proj, data_crs = _setup_europe_map(proj=ccrs.PlateCarree())
+
+    # ── Temperature advection fill ───────────────────────────────────────────────
+    cf_levs = np.arange(TEMP_ADV_MIN_850, TEMP_ADV_MAX_850 + TEMP_ADV_INTERVAL_850, TEMP_ADV_INTERVAL_850)
+    cf = ax.contourf(
+        lon_2d, lat_2d, adv_scaled,
+        levels=cf_levs, cmap="RdBu_r",
+        transform=data_crs, extend="both",
+    )
+    _fs = max(1, round(FONT_LABEL * FONT_SCALE_UPPER_CBAR))
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD, axes_class=plt.Axes)
+    cb = fig.colorbar(cf, cax=cax)
+    cb.set_ticks(np.arange(TEMP_ADV_MIN_850, TEMP_ADV_MAX_850 + TEMP_ADV_INTERVAL_850, CBAR_TEMP_ADV_TICK_850))
+    cb.set_label("[ °C / h ]", fontsize=_fs) # K per 1 h scaled to °C per 1 h
+    cb.ax.tick_params(labelsize=_fs)
+
+    # ── GPH contours ────────────────────────────────────────────────────────
+    g_min  = np.floor(np.nanmin(gph_dam) / gph_interval) * gph_interval
+    g_max  = np.ceil( np.nanmax(gph_dam) / gph_interval) * gph_interval
+    g_levs = np.arange(g_min, g_max + gph_interval, gph_interval)
+    cs_g   = ax.contour(
+        lon_2d, lat_2d, gph_dam,
+        levels=g_levs, colors="black", linewidths=GPH_LINEWIDTH_UPPER,
+        transform=data_crs,
+    )
+    ax.clabel(
+        cs_g, cs_g.levels[::GPH_LABEL_STRIDE], fmt="%d",
+        fontsize=max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR)), inline=True,
+    )
+
+    # ── Wind barbs ──────────────────────────────────────────────────────────
+    st = _BARB_STRIDE
+    ax.barbs(
+        lon_2d[::st, ::st], lat_2d[::st, ::st],
+        ds["u_850"].values[::st, ::st], ds["v_850"].values[::st, ::st],
+        length=BARB_LENGTH * BARB_SCALE_UPPER,
+        transform=data_crs, color="black",
+    )
+
+    ax.set_title(
+        _gfs_title("850 hPa Temperature Advection [fill, °C / h], Geopotential Height [contours, dam], and Wind [barbs]", valid_time),
+        fontsize=max(1, round(FONT_TITLE * FONT_SCALE_UPPER_TITLE)), loc="left", fontweight="bold",
+    )
+
+    out_dir  = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = pd.to_datetime("now", utc=True).strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"850hpa_temperature_advection_{timestamp}.png"
+    fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.show()
+    return str(out_path.resolve())
+
+
+def plot_700hpa_relative_humidity(
+    ds: xr.Dataset,
+    gph_interval: float = GPH_INTERVAL_700,
+    sigma: float = SIGMA_UPPER,
+    output_dir: str = "../outputs",
+) -> str:
+    """
+    700 hPa relative humidity shading with geopotential height contours.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        GFS analysis dataset.
+    gph_interval : float
+        GPH contour interval (dam).
+    sigma : float
+        Gaussian smoothing sigma applied to GPH and RH fields.
+    output_dir : str
+        Directory to save the figure.
+
+    Returns
+    -------
+    str
+        Absolute path of the saved PNG.
+    """
+    valid_time = ds.attrs.get("valid_time", "unknown")
+    lon        = ds["longitude"].values
+    lat        = ds["latitude"].values
+    lon_2d, lat_2d = np.meshgrid(lon, lat)
+
+    gph_dam = _smooth_field(ds["gh_700"].values / 10.0, sigma)
+    rh_vals = _smooth_field(ds["rh_700"].values, sigma)
+
+    fig, ax, proj, data_crs = _setup_europe_map(proj=ccrs.PlateCarree())
+
+    # ── RH fill ─────────────────────────────────────────────────────────────
+    _n    = len(RH_CONTOUR_LEVELS_700) - 1
+    _cmap = ListedColormap([plt.cm.BuGn(v) for v in (0.50, 0.70, 0.90)][:_n])
+    rh_norm = BoundaryNorm(RH_CONTOUR_LEVELS_700, ncolors=_n)
+    cf = ax.contourf(
+        lon_2d, lat_2d, rh_vals,
+        levels=RH_CONTOUR_LEVELS_700, cmap=_cmap, norm=rh_norm,
+        transform=data_crs, extend="neither",
+    )
+    _fs = max(1, round(FONT_LABEL * FONT_SCALE_UPPER_CBAR))
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD, axes_class=plt.Axes)
+    cb = fig.colorbar(cf, cax=cax)
+    cb.set_label("[ % ]", fontsize=_fs)
+    cb.set_ticks(RH_CONTOUR_LEVELS_700)
+    cb.ax.tick_params(labelsize=_fs)
+
+    # ── GPH contours (blue) ─────────────────────────────────────────────────
+    g_min  = np.floor(np.nanmin(gph_dam) / gph_interval) * gph_interval
+    g_max  = np.ceil( np.nanmax(gph_dam) / gph_interval) * gph_interval
+    g_levs = np.arange(g_min, g_max + gph_interval, gph_interval)
+    cs_g   = ax.contour(
+        lon_2d, lat_2d, gph_dam,
+        levels=g_levs, colors="steelblue", linewidths=GPH_LINEWIDTH_UPPER,
+        transform=data_crs,
+    )
+    ax.clabel(
+        cs_g, cs_g.levels[::GPH_LABEL_STRIDE], fmt="%d",
+        fontsize=max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR)), inline=True,
+    )
+
+    ax.set_title(
+        _gfs_title("700 hPa Relative Humidity [fill, %], Geopotential Height [contours, dam]", valid_time),
+        fontsize=max(1, round(FONT_TITLE * FONT_SCALE_UPPER_TITLE)), loc="left", fontweight="bold",
+    )
+
+    out_dir  = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = pd.to_datetime("now", utc=True).strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"700hpa_relative_humidity_{timestamp}.png"
+    fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.show()
+    return str(out_path.resolve())
+
+
+def plot_500hpa_gph(
+    ds: xr.Dataset,
+    gph_interval: float = GPH_INTERVAL_500,
+    sigma: float = SIGMA_UPPER,
+    output_dir: str = "../outputs",
+) -> str:
+    """
+    500 hPa geopotential height contours with wind barbs.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        GFS analysis dataset.
+    gph_interval : float
+        GPH contour interval (dam).
+    sigma : float
+        Gaussian smoothing sigma applied to GPH.
+    output_dir : str
+        Directory to save the figure.
+
+    Returns
+    -------
+    str
+        Absolute path of the saved PNG.
+    """
+    valid_time = ds.attrs.get("valid_time", "unknown")
+    lon        = ds["longitude"].values
+    lat        = ds["latitude"].values
+    lon_2d, lat_2d = np.meshgrid(lon, lat)
+
+    gph_dam = _smooth_field(ds["gh_500"].values / 10.0, sigma)
+
+    fig, ax, proj, data_crs = _setup_europe_map(proj=ccrs.PlateCarree())
+
+    g_min  = np.floor(np.nanmin(gph_dam) / gph_interval) * gph_interval
+    g_max  = np.ceil( np.nanmax(gph_dam) / gph_interval) * gph_interval
+    g_levs = np.arange(g_min, g_max + gph_interval, gph_interval)
+    cs_g   = ax.contour(
+        lon_2d, lat_2d, gph_dam,
+        levels=g_levs, colors="black", linewidths=GPH_LINEWIDTH_500,
+        transform=data_crs,
+    )
+    ax.clabel(
+        cs_g, cs_g.levels[::GPH_LABEL_STRIDE_500], fmt="%d",
+        fontsize=max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR)), inline=True,
+    )
+
+    ax.set_title(
+        _gfs_title("500 hPa Geopotential Height [contours, dam]", valid_time),
+        fontsize=max(1, round(FONT_TITLE * FONT_SCALE_UPPER_TITLE)), loc="left", fontweight="bold",
+    )
+
+    out_dir  = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = pd.to_datetime("now", utc=True).strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"500hpa_gph_{timestamp}.png"
+    fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.show()
+    return str(out_path.resolve())
+
+
+def plot_500hpa_relative_vorticity(
+    ds: xr.Dataset,
+    rvort: xr.DataArray,
+    gph_interval: float = GPH_INTERVAL_500,
+    sigma: float = SIGMA_UPPER,
+    output_dir: str = "../outputs",
+    show: bool = True,
+) -> str:
+    """
+    500 hPa relative vorticity (fill), geopotential height (contours), and
+    wind barbs.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        GFS analysis dataset containing ``gh_500``, ``u_500``, ``v_500``.
+    rvort : xr.DataArray
+        Relative vorticity (1/s) computed from the full wind field.
+    gph_interval : float
+        GPH contour interval (dam).
+    sigma : float
+        Gaussian smoothing sigma applied to GPH.
+    output_dir : str
+        Directory to save the figure.
+
+    Returns
+    -------
+    str
+        Absolute path of the saved PNG.
+    """
+    valid_time = ds.attrs.get("valid_time", "unknown")
+    lon        = ds["longitude"].values
+    lat        = ds["latitude"].values
+    lon_2d, lat_2d = np.meshgrid(lon, lat)
+
+    gph_dam   = _smooth_field(ds["gh_500"].values / 10.0, sigma)
+    zeta_disp = np.asarray(rvort.values, dtype=float) * VORTICITY_DISPLAY_SCALE
+
+    fig, ax, proj, data_crs = _setup_europe_map(proj=ccrs.PlateCarree())
+    fig.patch.set_facecolor("w")
+
+    # ── Vorticity fill ──────────────────────────────────────────────────────
+    z_levs = np.arange(-VORT_MAX_500, VORT_MAX_500 + VORT_INTERVAL_500, VORT_INTERVAL_500)
+    cf = ax.contourf(
+        lon_2d, lat_2d, zeta_disp,
+        levels=z_levs, cmap=_pvort_cmap,
+        transform=data_crs, extend="both",
+    )
+    _fs = max(1, round(FONT_LABEL * FONT_SCALE_UPPER_CBAR))
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD, axes_class=plt.Axes)
+    cb = fig.colorbar(cf, cax=cax)
+    cb.set_ticks(np.arange(-VORT_MAX_500, VORT_MAX_500 + VORT_INTERVAL_500, CBAR_VORT_TICK_500))
+    cb.set_label(r"[ ×10⁻⁵ s⁻¹ ]", fontsize=_fs)
+    cb.ax.tick_params(labelsize=_fs)
+
+    # ── GPH contours ────────────────────────────────────────────────────────
+    g_min  = np.floor(np.nanmin(gph_dam) / gph_interval) * gph_interval
+    g_maxv = np.ceil( np.nanmax(gph_dam) / gph_interval) * gph_interval
+    g_levs = np.arange(g_min, g_maxv + gph_interval, gph_interval)
+    _fl = max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR))
+    cs = ax.contour(
+        lon_2d, lat_2d, gph_dam,
+        levels=g_levs, colors="black", linewidths=GPH_LINEWIDTH_500,
+        transform=data_crs,
+    )
+    ax.clabel(cs, cs.levels[::GPH_LABEL_STRIDE_500], fmt="%d", fontsize=_fl, inline=True)
+
+    # ── Wind barbs ──────────────────────────────────────────────────────────
+    st = _BARB_STRIDE
+    ax.barbs(
+        lon_2d[::st, ::st], lat_2d[::st, ::st],
+        ds["u_500"].values[::st, ::st], ds["v_500"].values[::st, ::st],
+        length=BARB_LENGTH * BARB_SCALE_UPPER,
+        transform=data_crs, color="black", linewidth=0.6,
+    )
+
+    ax.set_title(
+        _gfs_title(
+            r"500 hPa Relative Vorticity [fill, ×10⁻⁵ s⁻¹], Geopotential Height [contours, dam], Wind",
+            valid_time,
+        ),
+        fontsize=max(1, round(FONT_TITLE * FONT_SCALE_UPPER_TITLE)),
+        loc="left", fontweight="bold",
+    )
+
+    out_dir  = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = pd.to_datetime("now", utc=True).strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"500hpa_vorticity_{timestamp}.png"
+    fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+    return str(out_path.resolve())
+
+
+def plot_500hpa_relative_vorticity_advection(
+    ds: xr.Dataset,
+    rvort_adv: xr.DataArray,
+    gph_interval: float = GPH_INTERVAL_500,
+    sigma: float = SIGMA_UPPER,
+    output_dir: str = "../outputs",
+    show: bool = True,
+) -> str:
+    """
+    500 hPa relative vorticity advection (fill, PVA red / NVA blue),
+    geopotential height (contours), and wind barbs.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        GFS analysis dataset containing ``gh_500``, ``u_500``, ``v_500``.
+    rvort_adv : xr.DataArray
+        Relative vorticity advection (1/s²) from
+        ``compute_relative_vorticity_advection()``.
+    gph_interval : float
+        GPH contour interval (dam).
+    sigma : float
+        Gaussian smoothing sigma applied to GPH.
+    output_dir : str
+        Directory to save the figure.
+
+    Returns
+    -------
+    str
+        Absolute path of the saved PNG.
+    """
+    valid_time = ds.attrs.get("valid_time", "unknown")
+    lon        = ds["longitude"].values
+    lat        = ds["latitude"].values
+    lon_2d, lat_2d = np.meshgrid(lon, lat)
+
+    gph_dam   = _smooth_field(ds["gh_500"].values / 10.0, sigma)
+    zadv_disp = np.asarray(rvort_adv.values, dtype=float) * 1e9
+    a_max     = max(np.nanpercentile(np.abs(zadv_disp), 97), 0.1)
+
+    fig, ax, proj, data_crs = _setup_europe_map(proj=ccrs.PlateCarree())
+    fig.patch.set_facecolor("w")
+
+    # ── Vorticity advection fill ─────────────────────────────────────────────
+    a_levs = np.linspace(-a_max, a_max, 21)
+    cf = ax.contourf(
+        lon_2d, lat_2d, zadv_disp,
+        levels=a_levs, cmap="RdBu_r",
+        transform=data_crs, extend="both",
+    )
+    _fs = max(1, round(FONT_LABEL * FONT_SCALE_UPPER_CBAR))
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD, axes_class=plt.Axes)
+    cb = fig.colorbar(cf, cax=cax)
+    cb.set_label(r"[ ×10⁻⁹ s⁻² ]", fontsize=_fs)
+    cb.ax.tick_params(labelsize=_fs)
+
+    # ── GPH contours ─────────────────────────────────────────────────────────
+    g_min  = np.floor(np.nanmin(gph_dam) / gph_interval) * gph_interval
+    g_maxv = np.ceil( np.nanmax(gph_dam) / gph_interval) * gph_interval
+    g_levs = np.arange(g_min, g_maxv + gph_interval, gph_interval)
+    _fl = max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR))
+    cs = ax.contour(
+        lon_2d, lat_2d, gph_dam,
+        levels=g_levs, colors="black", linewidths=GPH_LINEWIDTH_500,
+        transform=data_crs,
+    )
+    ax.clabel(cs, cs.levels[::GPH_LABEL_STRIDE_500], fmt="%d", fontsize=_fl, inline=True)
+
+    # ── Wind barbs ───────────────────────────────────────────────────────────
+    st = _BARB_STRIDE
+    ax.barbs(
+        lon_2d[::st, ::st], lat_2d[::st, ::st],
+        ds["u_500"].values[::st, ::st], ds["v_500"].values[::st, ::st],
+        length=BARB_LENGTH * BARB_SCALE_UPPER,
+        transform=data_crs, color="black", linewidth=0.6,
+    )
+
+    ax.set_title(
+        _gfs_title(
+            r"500 hPa Relative Vorticity Advection [fill, ×10⁻⁹ s⁻², PVA red / NVA blue],"
+            " Geopotential Height [contours, dam], Wind",
+            valid_time,
+        ),
+        fontsize=max(1, round(FONT_TITLE * FONT_SCALE_UPPER_TITLE)),
+        loc="left", fontweight="bold",
+    )
+
+    out_dir  = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = pd.to_datetime("now", utc=True).strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"500hpa_vorticity_advection_{timestamp}.png"
+    fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+    return str(out_path.resolve())
+
+
+def plot_250hpa_jet(
+    ds: xr.Dataset,
+    wspd: xr.DataArray,
+    gph_interval: float = GPH_INTERVAL_250,
+    isotach_interval: int = ISOTACH_INTERVAL,
+    sigma: float = SIGMA_UPPER,
+    output_dir: str = "../outputs",
+) -> str:
+    """
+    250 hPa wind speed (isotachs), geopotential height, and wind barbs.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        GFS analysis dataset.
+    wspd : xr.DataArray
+        Wind speed (m/s) from ``compute_wind_speed()``.
+    gph_interval : float
+        GPH contour interval (dam).
+    isotach_interval : int
+        Isotach fill interval (m/s).
+    sigma : float
+        Gaussian smoothing sigma applied to GPH.
+    output_dir : str
+        Directory to save the figure.
+
+    Returns
+    -------
+    str
+        Absolute path of the saved PNG.
+    """
+    valid_time = ds.attrs.get("valid_time", "unknown")
+    lon        = ds["longitude"].values
+    lat        = ds["latitude"].values
+    lon_2d, lat_2d = np.meshgrid(lon, lat)
+
+    gph_dam   = _smooth_field(ds["gh_250"].values / 10.0, sigma)
+    wspd_vals = np.asarray(wspd.values, dtype=float)
+
+    fig, ax, proj, data_crs = _setup_europe_map(proj=ccrs.PlateCarree())
+
+    # ── Isotach fill ────────────────────────────────────────────────────────
+    iso_levs = list(range(ISOTACH_MIN, ISOTACH_MAX, isotach_interval))
+    cf = ax.contourf(
+        lon_2d, lat_2d, wspd_vals,
+        levels=iso_levs, cmap="YlOrRd",
+        transform=data_crs, extend="max",
+    )
+    _fs = max(1, round(FONT_LABEL * FONT_SCALE_UPPER_CBAR))
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD, axes_class=plt.Axes)
+    cb = fig.colorbar(cf, cax=cax)
+    cb.set_ticks(range(ISOTACH_MIN, ISOTACH_MAX, CBAR_ISOTACH_TICK_250))
+    cb.set_label("[ m/s ]", fontsize=_fs)
+    cb.ax.tick_params(labelsize=_fs)
+
+    # ── Jet-core contour (emphasized) ───────────────────────────────────────
+    ax.contour(
+        lon_2d, lat_2d, wspd_vals,
+        levels=[JET_CORE_LEVEL], colors=JET_CORE_COLOR, linewidths=JET_CORE_LINEWIDTH,
+        transform=data_crs,
+    )
+
+    # ── GPH contours ────────────────────────────────────────────────────────
+    g_min  = np.floor(np.nanmin(gph_dam) / gph_interval) * gph_interval
+    g_max  = np.ceil( np.nanmax(gph_dam) / gph_interval) * gph_interval
+    g_levs = np.arange(g_min, g_max + gph_interval, gph_interval)
+    cs_g   = ax.contour(
+        lon_2d, lat_2d, gph_dam,
+        levels=g_levs, colors="black", linewidths=GPH_LINEWIDTH_UPPER,
+        transform=data_crs,
+    )
+    ax.clabel(
+        cs_g, cs_g.levels[::GPH_LABEL_STRIDE_250], fmt="%d",
+        fontsize=max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR)), inline=True,
+    )
+
+    # ── Wind barbs ──────────────────────────────────────────────────────────
+    st = _BARB_STRIDE
+    ax.barbs(
+        lon_2d[::st, ::st], lat_2d[::st, ::st],
+        ds["u_250"].values[::st, ::st], ds["v_250"].values[::st, ::st],
+        length=BARB_LENGTH * BARB_SCALE_UPPER,
+        transform=data_crs, color="black",
+    )
+
+    ax.set_title(
+        _gfs_title("250 hPa Wind Speed [fill, m/s], Geopotential Height [contours, dam], and Wind [barbs]", valid_time),
+        fontsize=max(1, round(FONT_TITLE * FONT_SCALE_UPPER_TITLE)), loc="left", fontweight="bold",
+    )
+
+    out_dir  = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = pd.to_datetime("now", utc=True).strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"250hpa_jet_{timestamp}.png"
+    fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.show()
+    return str(out_path.resolve())
+
+
+def plot_upper_air_overview(
+    ds: xr.Dataset,
+    T_adv: xr.DataArray,
+    rvort: xr.DataArray,
+    wspd: xr.DataArray,
+    sigma: float = SIGMA_UPPER,
+    output_dir: str = "../outputs",
+) -> str:
+    """
+    Four-panel upper-air synthesis figure.
+
+    Assembles the four upper-air diagnostics at the common analysis valid
+    time into a 2 × 2 figure:
+
+    * Upper-left  : 850 hPa temperature advection + GPH
+    * Upper-right : 700 hPa relative humidity + GPH
+    * Lower-left  : 500 hPa relative vorticity + GPH
+    * Lower-right : 250 hPa isotachs + GPH + wind barbs
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        GFS analysis dataset.
+    T_adv : xr.DataArray
+        Temperature advection (K/s) from ``compute_temperature_advection()``.
+    rvort : xr.DataArray
+        Relative vorticity (1/s) computed from the full wind field.
+    wspd : xr.DataArray
+        Wind speed at 250 hPa (m/s) from ``compute_wind_speed()``.
+    sigma : float
+        Gaussian smoothing sigma applied to all gridded fields.
+    output_dir : str
+        Directory to save the figure.
+
+    Returns
+    -------
+    str
+        Absolute path of the saved PNG.
+    """
+    valid_time = ds.attrs.get("valid_time", "unknown")
+    lon        = ds["longitude"].values
+    lat        = ds["latitude"].values
+    lon_2d, lat_2d = np.meshgrid(lon, lat)
+
+    gph_850  = _smooth_field(ds["gh_850"].values / 10.0, sigma)
+    gph_700  = _smooth_field(ds["gh_700"].values / 10.0, sigma)
+    gph_500  = _smooth_field(ds["gh_500"].values / 10.0, sigma)
+    gph_250  = _smooth_field(ds["gh_250"].values / 10.0, sigma)
+    rh_700   = _smooth_field(ds["rh_700"].values, sigma)
+    wspd_arr = np.asarray(wspd.values, dtype=float)
+
+    adv_scaled = np.asarray(T_adv.values,  dtype=float) * TEMP_ADV_TIME_SCALE
+    zeta_disp  = np.asarray(rvort.values, dtype=float) * VORTICITY_DISPLAY_SCALE
+
+    proj     = ccrs.PlateCarree()
+    data_crs = ccrs.PlateCarree()
+    fig, axes = plt.subplots(
+        2, 2,
+        figsize=(FIG_SIZE_IN[0] * FIG_SIZE_SCALE_OVERVIEW, FIG_HEIGHT_OVERVIEW),
+        subplot_kw={"projection": proj},
+        gridspec_kw={"wspace": SUBPLOT_WSPACE_OVERVIEW, "hspace": SUBPLOT_HSPACE_OVERVIEW},
+    )
+    fig.patch.set_facecolor("w")
+
+    ax_tl, ax_tr = axes[0, 0], axes[0, 1]
+    ax_bl, ax_br = axes[1, 0], axes[1, 1]
+    for ax in axes.flat:
+        _setup_europe_map(ax=ax)
+
+    _ft = max(1, round(FONT_TITLE * FONT_SCALE_TITLE_OVERVIEW))
+    _fl = max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR * FONT_SCALE_CONTOUR_OVERVIEW))
+    _fs = max(1, round(FONT_LABEL * FONT_SCALE_UPPER_CBAR * FONT_SCALE_TITLE_OVERVIEW))
+    st2 = _BARB_STRIDE * BARB_STRIDE_SCALE_OVERVIEW
+    _bl = BARB_LENGTH * BARB_SCALE_STATION * BARB_SCALE_OVERVIEW
+
+    def _gph_cs(ax, gph_dam, interval, color="black"):
+        g_min  = np.floor(np.nanmin(gph_dam) / interval) * interval
+        g_max  = np.ceil( np.nanmax(gph_dam) / interval) * interval
+        g_levs = np.arange(g_min, g_max + interval, interval)
+        cs     = ax.contour(lon_2d, lat_2d, gph_dam, levels=g_levs,
+                            colors=color, linewidths=0.8, transform=data_crs)
+        ax.clabel(cs, cs.levels[::GPH_LABEL_STRIDE], fmt="%d", fontsize=_fl, inline=True)
+
+    def _cbar(ax, cf, label, ticks=None):
+        div = make_axes_locatable(ax)
+        cax = div.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD, axes_class=plt.Axes)
+        cb  = fig.colorbar(cf, cax=cax)
+        cb.set_label(label, fontsize=_fs)
+        if ticks is not None:
+            cb.set_ticks(ticks)
+        cb.ax.tick_params(labelsize=_fs)
+
+    # ── TL: 850 hPa temperature advection ───────────────────────────────────
+    cf_tl = ax_tl.contourf(
+        lon_2d, lat_2d, adv_scaled,
+        levels=np.arange(TEMP_ADV_MIN_850, TEMP_ADV_MAX_850 + TEMP_ADV_INTERVAL_850, TEMP_ADV_INTERVAL_850),
+        cmap="RdBu_r", transform=data_crs, extend="both",
+    )
+    _cbar(ax_tl, cf_tl, "[ °C / h ]",
+          ticks=np.arange(TEMP_ADV_MIN_850, TEMP_ADV_MAX_850 + TEMP_ADV_INTERVAL_850, CBAR_TEMP_ADV_TICK_850))
+    _gph_cs(ax_tl, gph_850, GPH_INTERVAL_850)
+    ax_tl.barbs(
+        lon_2d[::st2, ::st2], lat_2d[::st2, ::st2],
+        ds["u_850"].values[::st2, ::st2], ds["v_850"].values[::st2, ::st2],
+        length=_bl, transform=data_crs, color="black",
+    )
+    ax_tl.set_title("850 hPa Temperature Advection [fill, °C / h],\nGeopotential Height [contours, dam], Wind [barbs]", fontsize=_ft, loc="left", fontweight="bold")
+
+    # ── TR: 700 hPa relative humidity ───────────────────────────────────────
+    _n_rh   = len(RH_CONTOUR_LEVELS_700) - 1
+    _rh_cmap = ListedColormap([plt.cm.BuGn(v) for v in (0.50, 0.70, 0.90)][:_n_rh])
+    rh_norm = BoundaryNorm(RH_CONTOUR_LEVELS_700, ncolors=_n_rh)
+    cf_tr = ax_tr.contourf(
+        lon_2d, lat_2d, rh_700,
+        levels=RH_CONTOUR_LEVELS_700, cmap=_rh_cmap, norm=rh_norm,
+        transform=data_crs, extend="neither",
+    )
+    _cbar(ax_tr, cf_tr, "[ % ]", ticks=RH_CONTOUR_LEVELS_700)
+    _gph_cs(ax_tr, gph_700, GPH_INTERVAL_700, color="steelblue")
+    ax_tr.set_title("700 hPa Relative Humidity [fill, %],\nGeopotential Height [contours, dam]", fontsize=_ft, loc="left", fontweight="bold")
+
+    # ── BL: 500 hPa relative vorticity ──────────────────────────────────────
+    cf_bl = ax_bl.contourf(
+        lon_2d, lat_2d, zeta_disp,
+        levels=np.arange(-VORT_MAX_500, VORT_MAX_500 + VORT_INTERVAL_500, VORT_INTERVAL_500),
+        cmap=_pvort_cmap, transform=data_crs, extend="both",
+    )
+    _cbar(ax_bl, cf_bl, r"[ ×10⁻⁵ s⁻¹ ]",
+          ticks=np.arange(-VORT_MAX_500, VORT_MAX_500 + VORT_INTERVAL_500, CBAR_VORT_TICK_500))
+    _gph_cs(ax_bl, gph_500, GPH_INTERVAL_500)
+    ax_bl.barbs(
+        lon_2d[::st2, ::st2], lat_2d[::st2, ::st2],
+        ds["u_500"].values[::st2, ::st2], ds["v_500"].values[::st2, ::st2],
+        length=_bl, transform=data_crs, color="black",
+    )
+    ax_bl.set_title("500 hPa Relative Vorticity [fill, ×10⁻⁵ s⁻¹],\nGeopotential Height [contours, dam], Wind [barbs]", fontsize=_ft, loc="left", fontweight="bold")
+
+    # ── BR: 250 hPa isotachs + barbs ────────────────────────────────────────
+    iso_levs = list(range(ISOTACH_MIN, ISOTACH_MAX, ISOTACH_INTERVAL))
+    cf_br = ax_br.contourf(
+        lon_2d, lat_2d, wspd_arr,
+        levels=iso_levs, cmap="YlOrRd", transform=data_crs, extend="max",
+    )
+    _cbar(ax_br, cf_br, "[ m/s ]", ticks=list(range(ISOTACH_MIN, ISOTACH_MAX, CBAR_ISOTACH_TICK_250)))
+    ax_br.contour(lon_2d, lat_2d, wspd_arr, levels=[JET_CORE_LEVEL],
+                  colors=JET_CORE_COLOR, linewidths=JET_CORE_LINEWIDTH * 0.8, transform=data_crs)
+    _gph_cs(ax_br, gph_250, GPH_INTERVAL_250)
+    ax_br.barbs(
+        lon_2d[::st2, ::st2], lat_2d[::st2, ::st2],
+        ds["u_250"].values[::st2, ::st2], ds["v_250"].values[::st2, ::st2],
+        length=_bl, transform=data_crs, color="black",
+    )
+    ax_br.set_title("250 hPa Wind Speed [fill, m/s],\nGeopotential Height [contours, dam], and Wind [barbs]", fontsize=_ft, loc="left", fontweight="bold")
+
+    fig.suptitle(
+        _gfs_title("Upper-Air Synoptic Overview", valid_time),
+        fontsize=max(1, round(FONT_TITLE * FONT_SCALE_SUPTITLE_OVERVIEW)), fontweight="bold", y=0.98,
+    )
+    fig.subplots_adjust(top=0.93)
+
+    out_dir  = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = pd.to_datetime("now", utc=True).strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"upper_air_overview_{timestamp}.png"
+    fig.savefig(out_path, dpi=FIG_DPI_OVERVIEW, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.show()
     return str(out_path.resolve())
