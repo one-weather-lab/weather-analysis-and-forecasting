@@ -3,6 +3,7 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
+  - sqlite>=3.41
   - numpy
   - pandas
   - matplotlib
