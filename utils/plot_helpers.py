@@ -24,6 +24,7 @@ from typing import Optional
 
 import logging
 
+from matplotlib import units
 import matplotlib.pyplot as plt
 import matplotlib.collections as mcoll
 from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
@@ -211,6 +212,65 @@ _GFS_GRID_DEG    = 0.25
 _KM_PER_DEG      = 111.0    # approximate km per degree latitude (barb stride)
 _KM_PER_DEG_EQUAT = 111.32  # equatorial km per degree, WGS84 (shoelace area)
 _BARB_STRIDE     = max(1, round(THINNING_RADIUS_KM / (_GFS_GRID_DEG * _KM_PER_DEG)))
+
+# [Skew-T figure]
+SKEWT_FIG_SIZE          = (9, 12)   # Skew-T figure size (inches)
+SKEWT_ROTATION          = 45        # Skew-T temperature axis rotation (degrees)
+SKEWT_WIND_STRIDE       = 2         # wind barb thinning stride
+SKEWT_PROFILE_LINEWIDTH = 2.0       # linewidth for T and Td profile curves
+SKEWT_PARCEL_LINEWIDTH  = 1.5       # linewidth for parcel trajectory
+SKEWT_MARKER_COLOR      = "k"       # color for LCL/LFC/EL horizontal markers
+SKEWT_MARKER_LINEWIDTH  = 0.8       # linewidth for LCL/LFC/EL markers
+SKEWT_MARKER_ALPHA      = 0.6       # alpha for LCL/LFC/EL markers
+SKEWT_MARKER_XMIN       = 0.88      # left extent of LCL/LFC/EL marker lines (axes fraction)
+SKEWT_MARKER_XMAX       = 1.0       # right extent of LCL/LFC/EL marker lines
+
+# [Skew-T convective-level tick markers]
+SKEWT_LEVEL_LINE_X_START  = 0.85
+SKEWT_LEVEL_LINE_X_END    = 0.92
+SKEWT_LEVEL_LINE_WIDTH    = 1.8
+SKEWT_LEVEL_LINE_ALPHA    = 0.85
+SKEWT_LEVEL_LABEL_X       = 0.91
+SKEWT_LEVEL_LABEL_FONTSIZE = 9
+
+# [Skew-T instability annotation box]
+SKEWT_ANNOT_X             = 0.02
+SKEWT_ANNOT_Y             = 0.03
+SKEWT_ANNOT_FONTSIZE      = 10
+SKEWT_ANNOT_LINESPACING   = 1.6
+SKEWT_ANNOT_ALPHA         = 0.85
+
+# [Skew-T reference lines]
+SKEWT_ISOBAR_LEVELS          = [100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+SKEWT_ISOBAR_COLOR           = "#888888"    # isobar color
+SKEWT_ISOBAR_LINEWIDTH       = 0.7          # isobar line width
+SKEWT_ISOBAR_ALPHA           = 0.8          # isobar alpha
+SKEWT_ISOTHERM_MIN           = -70          # leftmost isotherm (°C)
+SKEWT_ISOTHERM_MAX           = 60           # rightmost isotherm (°C)
+SKEWT_ISOTHERM_INTERVAL      = 10           # isotherm spacing (°C)
+SKEWT_ISOTHERM_COLOR         = "#888888"    # isotherm color
+SKEWT_ISOTHERM_LINEWIDTH     = 0.5          # isotherm line width
+SKEWT_ISOTHERM_ALPHA         = 0.6          # isotherm alpha
+SKEWT_ZERO_ISOTHERM_COLOR    = "#3a7ebf"  # 0 °C isotherm color
+SKEWT_ZERO_ISOTHERM_STYLE    = "--"      # 0 °C isotherm style
+SKEWT_ZERO_ISOTHERM_LINEWIDTH = 1.2         # 0 °C isotherm line width
+SKEWT_ZERO_ISOTHERM_ALPHA    = 0.8          # 0 °C isotherm alpha
+SKEWT_MIXING_RATIO_LEVELS    = [0.4, 1, 2, 4, 7, 10, 16, 24, 32]  # (g/kg)
+SKEWT_MIXING_LINE_STYLE      = "--"         # mixing ratio line style
+SKEWT_MIXING_LINE_COLOR      = "#AADBAA"    # mixing ratio line color
+SKEWT_MIXING_LINE_WIDTH      = 1.2          # mixing ratio line width
+SKEWT_MIXING_LINE_ALPHA      = 0.5          # mixing ratio line alpha
+SKEWT_MIXING_LABEL_FONTSIZE  = 9            # font size for mixing ratio line labels
+SKEWT_DRY_ADIABAT_INTERVAL   = 10           # dry adiabat interval (°C)
+SKEWT_DRY_ADIABAT_STYLE      = "--"         # dry adiabat line style
+SKEWT_DRY_ADIABAT_COLOR      = "#E59F9F"    # dry adiabat color
+SKEWT_DRY_ADIABAT_LINEWIDTH  = 1.2          # dry adiabat line width
+SKEWT_DRY_ADIABAT_ALPHA      = 0.5          # dry adiabat alpha
+SKEWT_MOIST_ADIABAT_INTERVAL = 5            # moist adiabat interval (°C)
+SKEWT_MOIST_ADIABAT_COLOR    = "#A3C4E6"    # moist adiabat color
+SKEWT_MOIST_ADIABAT_STYLE    = "--"         # moist adiabat line style
+SKEWT_MOIST_ADIABAT_LINEWIDTH = 1.2         # moist adiabat line width
+SKEWT_MOIST_ADIABAT_ALPHA    = 0.5          # moist adiabat alpha
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -2853,3 +2913,452 @@ def plot_upper_air_overview(
                 facecolor="white", edgecolor="none")
     plt.show()
     return str(out_path.resolve())
+
+
+# [Skew-T diagrams]
+
+def init_skewt_figure(p_min, p_max, t_min, t_max) -> tuple:
+    """
+    Create a blank Skew-T log-P figure with isopleths and isotherms,
+    and with axis limits applied.
+
+    Parameters
+    ----------
+    p_min : float
+        Top of pressure axis (hPa).
+    p_max : float
+        Bottom of pressure axis (hPa).
+    t_min : float
+        Left edge of temperature axis (°C).
+    t_max : float
+        Right edge of temperature axis (°C).
+
+    Returns
+    -------
+    tuple[matplotlib.figure.Figure, metpy.plots.SkewT]
+        The figure and the SkewT axes wrapper.
+    """
+    fig = plt.figure(figsize=SKEWT_FIG_SIZE)
+    skew = SkewT(fig, rotation=SKEWT_ROTATION)
+    skew.ax.set_ylim(p_max, p_min)
+    skew.ax.set_xlim(t_min, t_max)
+    skew.ax.set_xlabel("Temperature [ °C ]", fontsize=FONT_LABEL * FONT_SCALE_STATION) # font size is scalded down based on font_scale_station to avoid duplicates
+    skew.ax.set_ylabel("Pressure [ hPa ]", fontsize=FONT_LABEL * FONT_SCALE_STATION) # font size is scalded down based on font_scale_station to avoid duplicates
+    skew.ax.tick_params(labelsize=round(FONT_LABEL * FONT_SCALE_CONTOUR)) # font size scaled down via FONT_SCALE_CONTOUR to avoid clashing with cell title
+    skew.ax.axvline(0, linestyle = SKEWT_ZERO_ISOTHERM_STYLE, 
+                    color=SKEWT_ZERO_ISOTHERM_COLOR,
+                    linewidth=SKEWT_ZERO_ISOTHERM_LINEWIDTH,
+                    alpha=SKEWT_ZERO_ISOTHERM_ALPHA)
+    return fig, skew
+
+
+def add_skewt_mixing_lines(skew) -> None:
+    """
+    Draw constant-mixing-ratio lines with value labels at the bottom of the diagram.
+    """
+    w_lines = np.array(SKEWT_MIXING_RATIO_LEVELS) * units("g/kg")
+    skew.plot_mixing_lines(
+        mixing_ratio=w_lines,
+        linestyle=SKEWT_MIXING_LINE_STYLE, color=SKEWT_MIXING_LINE_COLOR,
+        alpha = SKEWT_MIXING_LINE_ALPHA, linewidth=SKEWT_MIXING_LINE_WIDTH,
+    )
+    p_bottom = skew.ax.get_ylim()[0]   # p_max — bottom of diagram
+    t_min, t_max = skew.ax.get_xlim()
+    for w in SKEWT_MIXING_RATIO_LEVELS:
+        e = w * p_bottom / (622.0 + w)
+        if e <= 0:
+            continue
+        try:
+            T_label = 243.5 * math.log(e / 6.112) / (17.67 - math.log(e / 6.112))
+        except ValueError:
+            continue
+        if not (t_min <= T_label <= t_max):
+            continue
+        label = f"{w:g}"
+        skew.ax.text(
+            T_label, p_bottom, label,
+            fontsize=SKEWT_MIXING_LABEL_FONTSIZE, color=SKEWT_MIXING_LINE_COLOR,
+            ha="center", va="top", clip_on=False,
+        )
+
+
+def add_skewt_dry_adiabats(skew, t_min, t_max) -> None:
+    """
+    Draw dry adiabats spanning t_min–t_max at interval defined by ``SKEWT_DRY_ADIABAT_*``.
+    """
+    t0_vals = np.arange(t_min, t_max + 1, SKEWT_DRY_ADIABAT_INTERVAL) * units.degC
+    skew.plot_dry_adiabats(
+        t0=t0_vals,
+        linestyle=SKEWT_DRY_ADIABAT_STYLE, color=SKEWT_DRY_ADIABAT_COLOR,
+        alpha = SKEWT_DRY_ADIABAT_ALPHA, linewidth=SKEWT_DRY_ADIABAT_LINEWIDTH,
+    )
+
+
+def add_skewt_moist_adiabats(skew, t_min, t_max) -> None:
+    """
+    Draw moist adiabats spanning t_min–t_max at interval defined by ``SKEWT_MOIST_ADIABAT_*``.
+    """
+    t0_vals = np.arange(t_min, t_max + 1, SKEWT_MOIST_ADIABAT_INTERVAL) * units.degC
+    skew.plot_moist_adiabats(
+        t0=t0_vals,
+        linestyle=SKEWT_MOIST_ADIABAT_STYLE, color=SKEWT_MOIST_ADIABAT_COLOR,
+        alpha = SKEWT_MOIST_ADIABAT_ALPHA, linewidth=SKEWT_MOIST_ADIABAT_LINEWIDTH,
+    )
+
+def plot_skewt_sounding(p, T, Td, p_min, p_max, t_min, t_max, *,
+                        station_id=None, valid_dt=None,
+                        output_dir=None) -> tuple:
+    """
+    Overlay the radiosonde temperature and dew-point profiles on the Skew-T
+    background plot, and save the figure.
+
+    Parameters
+    ----------
+    p : pint.Quantity
+        Pressure profile in hPa, shape (N,), monotonically decreasing.
+    T : pint.Quantity
+        Temperature profile in °C, shape (N,).
+    Td : pint.Quantity
+        Dew-point profile in °C, shape (N,).
+    p_min, p_max : float
+        Pressure axis extents in hPa (top and bottom).
+    t_min, t_max : float
+        Temperature axis extents in °C (left and right edges).
+    station_id : str or None
+        WMO/ICAO station identifier shown in the upper-left corner.
+    valid_dt : datetime or None
+        Sounding valid time shown in the upper-right corner.
+    output_dir : str or None
+        Directory to save the figure. If None, the figure is not saved.
+
+    Returns
+    -------
+    tuple[matplotlib.figure.Figure, metpy.plots.SkewT]
+        The figure and the SkewT axes wrapper with the sounding overlaid.
+    """
+    fig, skew = init_skewt_figure(p_min, p_max, t_min, t_max)
+    add_skewt_mixing_lines(skew)
+    add_skewt_dry_adiabats(skew, t_min, t_max)
+    add_skewt_moist_adiabats(skew, t_min, t_max)
+    skew.plot(p, T, "r", linewidth=SKEWT_PROFILE_LINEWIDTH, label="Temperature")
+    skew.plot(p, Td, "g", linewidth=SKEWT_PROFILE_LINEWIDTH, label="Dew Point")
+    skew.ax.legend(loc="upper right", fontsize=round(FONT_LABEL * FONT_SCALE_CONTOUR))
+    if station_id is not None or valid_dt is not None:
+        title_y = skew.ax.get_position().y1 + 0.01
+        if station_id is not None:
+            fig.text(0.12, title_y, f"{station_id} Sounding",
+                     fontsize=FONT_TITLE * FONT_SCALE_CONTOUR, fontweight="bold", # font size scaled down via FONT_SCALE_CONTOUR to avoid clashing with cell title
+                     va="bottom", ha="left")
+        if valid_dt is not None:
+            fig.text(0.90, title_y, valid_dt.strftime("Valid time: %Y-%m-%d %H:%M UTC"),
+                     fontsize=FONT_TITLE * FONT_SCALE_CONTOUR, # font size scaled down via FONT_SCALE_CONTOUR to avoid clashing with cell title
+                     va="bottom", ha="right")
+    if output_dir is not None:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+        fig.savefig(out_dir / f"skewt_sounding_{timestamp}.png",
+                    dpi=FIG_DPI, bbox_inches="tight", facecolor="white")
+    return fig, skew
+
+
+def plot_skewt_parcel_diagnosis(skew, p, T, Td, parcel) -> None:
+    """
+    Overlay the parcel trajectory on the Skew-T sounding plot,
+    and save the figure.
+
+    Parameters
+    ----------
+    skew : metpy.plots.SkewT
+        Active SkewT axes wrapper returned by ``init_skewt_figure()``.
+    p : pint.Quantity
+        Pressure profile in hPa, shape (N,).
+    T : pint.Quantity
+        Environmental temperature profile in °C, shape (N,).
+    Td : pint.Quantity
+        Environmental dew-point profile in °C, shape (N,).
+    parcel : pint.Quantity
+        Parcel temperature profile in °C, shape (N,), from ``mpcalc.parcel_profile()``.
+    """
+    skew.plot(p, parcel, "k-", linewidth=SKEWT_PARCEL_LINEWIDTH, label="Parcel")
+    skew.ax.legend(loc="upper right", fontsize=round(FONT_LABEL * FONT_SCALE_CONTOUR))
+    skew.ax.text(
+        SKEWT_ANNOT_X, 1 - SKEWT_ANNOT_X,
+        f"CAPE : {cape.m:.0f} J/kg\nCIN  : {cin.m:.0f} J/kg",
+        transform=skew.ax.transAxes,
+        fontsize=SKEWT_ANNOT_FONTSIZE, va="top", ha="left",
+        linespacing=SKEWT_ANNOT_LINESPACING,
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
+                  edgecolor="#cccccc", alpha=SKEWT_ANNOT_ALPHA),
+        zorder=6,
+    )
+
+
+def plot_skewt_convective_levels(p, T, Td, parcel, *, lcl_p, lfc_p, el_p,
+                                  p_min, p_max, t_min, t_max,
+                                  station_id=None, valid_dt=None,
+                                  cape=None, cin=None,
+                                  output_dir="../outputs") -> tuple:
+    """
+    Overlay the LCL, LFC, and EL levels as horizontal lines with labels on the
+    Skew-T sounding and parcel diagnosis plot, and save the figure. Optionally 
+    annotate CAPE and CIN in the upper-left corner.
+
+    Parameters
+    ----------
+    p : pint.Quantity
+        Pressure profile in hPa, shape (N,).
+    T : pint.Quantity
+        Environmental temperature profile in °C, shape (N,).
+    Td : pint.Quantity
+        Environmental dew-point profile in °C, shape (N,).
+    parcel : pint.Quantity
+        Parcel temperature profile in °C, shape (N,), from ``mpcalc.parcel_profile``.
+        lcl_p : pint.Quantity or None
+        LCL pressure level in hPa, or None if not computable.
+    lfc_p : pint.Quantity or None
+        LFC pressure level in hPa, or None if not computable.
+    el_p : pint.Quantity or None
+        EL pressure level in hPa, or None if not computable.
+    cape : pint.Quantity or None
+        CAPE in J/kg. If provided together with cin, annotated in the upper-left corner.
+    cin : pint.Quantity or None
+        CIN in J/kg. If provided together with cape, annotated in the upper-left corner.
+    output_dir : str or None
+        Directory to save the figure. If None, the figure is not saved.
+
+    Returns
+    -------
+    tuple[matplotlib.figure.Figure, metpy.plots.SkewT]
+        The figure and the SkewT axes wrapper with the full parcel diagnosis overlaid.
+    """
+    fig, skew = plot_skewt_sounding(p, T, Td, p_min, p_max, t_min, t_max)
+    if parcel is not None:
+        plot_skewt_parcel_diagnosis(skew, p, T, Td, parcel, cape=cape, cin=cin)
+    if station_id is not None or valid_dt is not None:
+        title_y = skew.ax.get_position().y1 + 0.01
+        if station_id is not None:
+            fig.text(0.12, title_y, f"{station_id} Sounding",
+                     fontsize=FONT_TITLE * FONT_SCALE_CONTOUR, fontweight="bold", # font size scaled down via FONT_SCALE_CONTOUR to avoid clashing with cell title
+                     va="bottom", ha="left")
+        if valid_dt is not None:
+            fig.text(0.90, title_y, valid_dt.strftime("Valid time: %Y-%m-%d %H:%M UTC"),
+                     fontsize=FONT_TITLE * FONT_SCALE_CONTOUR, # font size scaled down via FONT_SCALE_CONTOUR to avoid clashing with cell title
+                     va="bottom", ha="right")
+    trans = blended_transform_factory(skew.ax.transAxes, skew.ax.transData)
+    _label_va = {"LCL": ("top", +8), "LFC": ("bottom", -8), "EL": ("top", +8)}
+    for label, p_lev in [("LCL", lcl_p), ("LFC", lfc_p), ("EL", el_p)]:
+        if p_lev is None or np.isnan(p_lev.m):
+            continue
+        skew.ax.plot(
+            [SKEWT_LEVEL_LINE_X_START, SKEWT_LEVEL_LINE_X_END], [p_lev.m, p_lev.m],
+            color=SKEWT_MARKER_COLOR, linewidth=SKEWT_LEVEL_LINE_WIDTH,
+            alpha=SKEWT_LEVEL_LINE_ALPHA, transform=trans,
+            solid_capstyle="butt", zorder=5,
+        )
+        va, dp = _label_va[label]
+        skew.ax.text(
+            SKEWT_LEVEL_LABEL_X, p_lev.m + dp, label,
+            transform=trans, fontsize=SKEWT_LEVEL_LABEL_FONTSIZE,
+            va=va, ha="left", color=SKEWT_MARKER_COLOR,
+            fontweight="bold", zorder=5,
+        )
+    if output_dir is not None:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+        out_path = out_dir / f"skewt_convective_levels_{timestamp}.png"
+        fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight", facecolor="white")
+        print(f"[OK] Saved: {out_path.resolve()}")
+    return fig, skew
+
+
+def plot_skewt_instability_panel(p, T, Td, parcel, *, lcl_p, lfc_p, el_p,
+                                  mu_cape, k,
+                                  cape=None, cin=None, annotate=True,
+                                  p_min, p_max, t_min, t_max,
+                                  station_id=None, valid_dt=None,
+                                  output_dir="../outputs") -> tuple:
+    """
+    Overlay the full parcel diagnosis with a single annotation box in the
+    upper-left corner summarizing CAPE, CIN, MUCAPE, and K-index.
+
+    Parameters
+    ----------
+    p : pint.Quantity
+        Pressure profile in hPa, shape (N,).
+    T : pint.Quantity
+        Environmental temperature profile in °C, shape (N,).
+    Td : pint.Quantity
+        Environmental dew-point profile in °C, shape (N,).
+    parcel : pint.Quantity
+        Parcel temperature profile in °C, shape (N,), from ``mpcalc.parcel_profile()``.
+    lcl_p : pint.Quantity or None
+        LCL pressure level in hPa, or None if not computable.
+    lfc_p : pint.Quantity or None
+        LFC pressure level in hPa, or None if not computable.
+    el_p : pint.Quantity or None
+        EL pressure level in hPa, or None if not computable.
+    mu_cape : pint.Quantity
+        Most Unstable Convective Available Potential Energy in J/kg.
+    k : pint.Quantity
+        K-index in °C.
+    cape : pint.Quantity or None
+        Surface-based CAPE in J/kg. When provided together with cin,
+        prepended to the annotation box.
+    cin : pint.Quantity or None
+        Surface-based CIN in J/kg. When provided together with cape,
+        prepended to the annotation box.
+    annotate : bool
+        If False, skip drawing the annotation box (used internally by
+        ``plot_skewt_winds`` to avoid duplicate boxes).
+    output_dir : str or None
+        Directory to save the figure. If None, the figure is not saved.
+
+    Returns
+    -------
+    tuple[matplotlib.figure.Figure, metpy.plots.SkewT]
+        The figure and the SkewT axes wrapper with the full parcel diagnosis and
+        the instability annotation overlaid.
+    """
+    fig, skew = plot_skewt_convective_levels(
+        p, T, Td, parcel, lcl_p=lcl_p, lfc_p=lfc_p, el_p=el_p,
+        p_min=p_min, p_max=p_max, t_min=t_min, t_max=t_max,
+        output_dir=None,
+    )
+    if station_id is not None or valid_dt is not None:
+        title_y = skew.ax.get_position().y1 + 0.01
+        if station_id is not None:
+            fig.text(0.12, title_y, f"{station_id} Sounding",
+                     fontsize=FONT_TITLE * FONT_SCALE_CONTOUR, fontweight="bold", # font size scaled down via FONT_SCALE_CONTOUR to avoid clashing with cell title
+                     va="bottom", ha="left")
+        if valid_dt is not None:
+            fig.text(0.90, title_y, valid_dt.strftime("Valid time: %Y-%m-%d %H:%M UTC"),
+                     fontsize=FONT_TITLE * FONT_SCALE_CONTOUR, # font size scaled down via FONT_SCALE_CONTOUR to avoid clashing with cell title
+                     va="bottom", ha="right")
+    if annotate:
+        lines = []
+        if cape is not None and cin is not None:
+            lines.append(f"CAPE    : {cape.m:.0f} J/kg")
+            lines.append(f"CIN     : {cin.m:.0f} J/kg")
+        lines.append(f"MUCAPE  : {mu_cape.m:.0f} J/kg")
+        lines.append(f"K-index : {k.m:.0f} °C")
+        skew.ax.text(
+            SKEWT_ANNOT_X, 1 - SKEWT_ANNOT_X,
+            "\n".join(lines),
+            transform=skew.ax.transAxes,
+            fontsize=SKEWT_ANNOT_FONTSIZE, va="top", ha="left",
+            linespacing=SKEWT_ANNOT_LINESPACING,
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
+                      edgecolor="#cccccc", alpha=SKEWT_ANNOT_ALPHA),
+            zorder=6,
+        )
+    if output_dir is not None:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+        out_path = out_dir / f"skewt_instability_panel_{timestamp}.png"
+        fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight", facecolor="white")
+        print(f"[OK] Saved: {out_path.resolve()}")
+    return fig, skew
+
+
+def plot_skewt_winds(p, T, Td, parcel, u, v, *, lcl_p, lfc_p, el_p,
+                     mu_cape, mu_cin, k, shear_mag,
+                     cape=None, cin=None,
+                     p_min, p_max, t_min, t_max,
+                     station_id=None, valid_dt=None,
+                     output_dir="../outputs") -> tuple:
+    """
+    Overlay wind barbs along the right margin of the Skew-T diagram with the
+    full parcel diagnosis and a single upper-left annotation box summarizing
+    CAPE, CIN, MUCAPE, K-index, and 0–6 km bulk shear.
+
+    Parameters
+    ----------
+    p : pint.Quantity
+        Pressure profile in hPa, shape (N,).
+    T : pint.Quantity
+        Environmental temperature profile in °C, shape (N,).
+    Td : pint.Quantity
+        Environmental dew-point profile in °C, shape (N,).
+    parcel : pint.Quantity
+        Parcel temperature profile in °C, shape (N,), from ``mpcalc.parcel_profile``.
+    u : pint.Quantity
+        Zonal wind component in knots, shape (N,).
+    v : pint.Quantity
+        Meridional wind component in knots, shape (N,).
+    lcl_p : pint.Quantity or None
+        LCL pressure level in hPa, or None if not computable.
+    lfc_p : pint.Quantity or None
+        LFC pressure level in hPa, or None if not computable.
+    el_p : pint.Quantity or None
+        EL pressure level in hPa, or None if not computable.
+    mu_cape : pint.Quantity
+        Most Unstable Convective Available Potential Energy in J/kg.
+    mu_cin : pint.Quantity
+        Most Unstable Convective Inhibition in J/kg.
+    k : pint.Quantity
+        K-index in °C.
+    shear_mag : float
+        0–6 km bulk shear magnitude in knots.
+    cape : pint.Quantity or None
+        Surface-based CAPE in J/kg. When provided together with cin,
+        prepended to the annotation box.
+    cin : pint.Quantity or None
+        Surface-based CIN in J/kg. When provided together with cape,
+        prepended to the annotation box.
+    output_dir : str or None
+        Directory to save the figure. If None, the figure is not saved.
+
+    Returns
+    -------
+    tuple[matplotlib.figure.Figure, metpy.plots.SkewT]
+        The figure and the SkewT axes wrapper with the full parcel diagnosis,
+        instability annotation, and wind barbs overlaid.
+    """
+    fig, skew = plot_skewt_instability_panel(
+        p, T, Td, parcel, lcl_p=lcl_p, lfc_p=lfc_p, el_p=el_p,
+        mu_cape=mu_cape, mu_cin=mu_cin, k=k,
+        p_min=p_min, p_max=p_max, t_min=t_min, t_max=t_max,
+        annotate=False, output_dir=None,
+    )
+    if station_id is not None or valid_dt is not None:
+        title_y = skew.ax.get_position().y1 + 0.01
+        if station_id is not None:
+            fig.text(0.12, title_y, f"{station_id} Sounding",
+                     fontsize=FONT_TITLE * FONT_SCALE_CONTOUR, fontweight="bold", # font size is scaled down based on font_scale_contour to avoid duplicates
+                     va="bottom", ha="left")
+        if valid_dt is not None:
+            fig.text(0.90, title_y, valid_dt.strftime("Valid time: %Y-%m-%d %H:%M UTC"),
+                     fontsize=FONT_TITLE * FONT_SCALE_CONTOUR, # font size is scaled down based on font_scale_contour to avoid duplicates
+                     va="bottom", ha="right")
+    mask = p.m >= 100
+    skew.plot_barbs(p[mask][::SKEWT_WIND_STRIDE], u[mask][::SKEWT_WIND_STRIDE],
+                    v[mask][::SKEWT_WIND_STRIDE], length=BARB_LENGTH * BARB_SCALE_UPPER)
+    lines = []
+    if cape is not None and cin is not None:
+        lines.append(f"CAPE    : {cape.m:.0f} J/kg")
+        lines.append(f"CIN     : {cin.m:.0f} J/kg")
+    lines.append(f"MUCAPE  : {mu_cape.m:.0f} J/kg")
+    lines.append(f"MU CIN  : {mu_cin.m:.0f} J/kg")
+    lines.append(f"K-index : {k.m:.0f} °C")
+    lines.append(f"0–6 km shear : {shear_mag:.1f} kt")
+    skew.ax.text(
+        SKEWT_ANNOT_X, 1 - SKEWT_ANNOT_X,
+        "\n".join(lines),
+        transform=skew.ax.transAxes,
+        fontsize=SKEWT_ANNOT_FONTSIZE, va="top", ha="left",
+        linespacing=SKEWT_ANNOT_LINESPACING,
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
+                  edgecolor="#cccccc", alpha=SKEWT_ANNOT_ALPHA),
+        zorder=7,
+    )
+    if output_dir is not None:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+        out_path = out_dir / f"skewt_wind_profile_{timestamp}.png"
+        fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight", facecolor="white")
+        print(f"[OK] Saved: {out_path.resolve()}")
+    return fig, skew
