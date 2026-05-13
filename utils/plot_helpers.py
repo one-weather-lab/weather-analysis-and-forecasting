@@ -24,10 +24,10 @@ from typing import Optional
 
 import logging
 
-from matplotlib import units
 import matplotlib.pyplot as plt
 import matplotlib.collections as mcoll
 from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
+from matplotlib.transforms import blended_transform_factory
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -36,6 +36,8 @@ import pandas as pd
 import xarray as xr
 from scipy.ndimage import gaussian_filter, maximum_filter, minimum_filter
 from metpy.calc import reduce_point_density
+from metpy.plots import SkewT
+from metpy.units import units
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -219,6 +221,9 @@ SKEWT_ROTATION          = 45        # Skew-T temperature axis rotation (degrees)
 SKEWT_WIND_STRIDE       = 2         # wind barb thinning stride
 SKEWT_PROFILE_LINEWIDTH = 2.0       # linewidth for T and Td profile curves
 SKEWT_PARCEL_LINEWIDTH  = 1.5       # linewidth for parcel trajectory
+SKEWT_CAPE_ALPHA        = 0.25      # alpha for CAPE shading
+SKEWT_CIN_ALPHA         = 0.25      # alpha for CIN shading
+SKEWT_ABOVE_EL_ALPHA    = 0.15      # alpha for negative area above EL shading
 SKEWT_MARKER_COLOR      = "k"       # color for LCL/LFC/EL horizontal markers
 SKEWT_MARKER_LINEWIDTH  = 0.8       # linewidth for LCL/LFC/EL markers
 SKEWT_MARKER_ALPHA      = 0.6       # alpha for LCL/LFC/EL markers
@@ -415,6 +420,21 @@ def _gfs_title(field_label: str, valid_time: str) -> str:
     vt = pd.Timestamp(valid_time, tz="UTC").strftime("%Y-%m-%d %H:%M UTC")
     return f"{field_label}\nGFS analysis valid: {vt}"
 
+
+def _add_skewt_annot_box(skew, lines: list[str]) -> None:
+    """
+    Place a white rounded annotation box in the upper-left corner of the Skew-T axes.
+    """
+    skew.ax.text(
+        SKEWT_ANNOT_X, 1 - SKEWT_ANNOT_X,
+        "\n".join(lines),
+        transform=skew.ax.transAxes,
+        fontsize=SKEWT_ANNOT_FONTSIZE, va="top", ha="left",
+        linespacing=SKEWT_ANNOT_LINESPACING,
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
+                  edgecolor="#cccccc", alpha=SKEWT_ANNOT_ALPHA),
+        zorder=6,
+    )
 
 # [Loaders]
 
@@ -3082,22 +3102,11 @@ def plot_skewt_parcel_diagnosis(skew, p, T, Td, parcel) -> None:
     """
     skew.plot(p, parcel, "k-", linewidth=SKEWT_PARCEL_LINEWIDTH, label="Parcel")
     skew.ax.legend(loc="upper right", fontsize=round(FONT_LABEL * FONT_SCALE_CONTOUR))
-    skew.ax.text(
-        SKEWT_ANNOT_X, 1 - SKEWT_ANNOT_X,
-        f"CAPE : {cape.m:.0f} J/kg\nCIN  : {cin.m:.0f} J/kg",
-        transform=skew.ax.transAxes,
-        fontsize=SKEWT_ANNOT_FONTSIZE, va="top", ha="left",
-        linespacing=SKEWT_ANNOT_LINESPACING,
-        bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                  edgecolor="#cccccc", alpha=SKEWT_ANNOT_ALPHA),
-        zorder=6,
-    )
 
 
 def plot_skewt_convective_levels(p, T, Td, parcel, *, lcl_p, lfc_p, el_p,
                                   p_min, p_max, t_min, t_max,
                                   station_id=None, valid_dt=None,
-                                  cape=None, cin=None,
                                   output_dir="../outputs") -> tuple:
     """
     Overlay the LCL, LFC, and EL levels as horizontal lines with labels on the
@@ -3134,7 +3143,7 @@ def plot_skewt_convective_levels(p, T, Td, parcel, *, lcl_p, lfc_p, el_p,
     """
     fig, skew = plot_skewt_sounding(p, T, Td, p_min, p_max, t_min, t_max)
     if parcel is not None:
-        plot_skewt_parcel_diagnosis(skew, p, T, Td, parcel, cape=cape, cin=cin)
+        plot_skewt_parcel_diagnosis(skew, p, T, Td, parcel)
     if station_id is not None or valid_dt is not None:
         title_y = skew.ax.get_position().y1 + 0.01
         if station_id is not None:
@@ -3171,6 +3180,61 @@ def plot_skewt_convective_levels(p, T, Td, parcel, *, lcl_p, lfc_p, el_p,
         fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight", facecolor="white")
         print(f"[OK] Saved: {out_path.resolve()}")
     return fig, skew
+
+
+def plot_skewt_cape_cin(skew, p, T, parcel, *,
+                        lcl_p=None, el_p=None,
+                        cape=None, cin=None,
+                        fig=None, output_dir="../outputs") -> None:
+    """
+    Shade CAPE (red) and CIN (blue) areas between the parcel path and the
+    environmental temperature profile on an existing Skew-T axes.
+    Optionally annotate CAPE and CIN values and save the figure.
+
+    Parameters
+    ----------
+    skew : metpy.plots.SkewT
+        Active SkewT axes wrapper returned by ``init_skewt_figure()``.
+    p : pint.Quantity
+        Pressure profile in hPa, shape (N,).
+    T : pint.Quantity
+        Environmental temperature profile in °C, shape (N,).
+    parcel : pint.Quantity
+        Parcel temperature profile in °C, shape (N,), from ``mpcalc.parcel_profile()``.
+    lcl_p : pint.Quantity or None
+        LCL pressure level in hPa.
+    el_p : pint.Quantity or None
+        EL pressure level in hPa. 
+    cape : pint.Quantity or None
+        CAPE in J/kg. When provided together with cin, adds annotation box.
+    cin : pint.Quantity or None
+        CIN in J/kg. When provided together with cape, adds annotation box.
+    fig : matplotlib.figure.Figure or None
+        Figure object used for saving. Required when output_dir is not None.
+    output_dir : str or None
+        Directory to save the figure. Skipped if None or fig is None.
+    """
+    parcel = parcel.copy()
+    if lcl_p is not None and not np.isnan(lcl_p.m):
+        below_lcl = np.asarray(p > lcl_p, dtype=bool)
+        parcel[below_lcl] = T[below_lcl].to(parcel.units)
+    if el_p is not None and not np.isnan(el_p.m):
+        above_el = np.asarray(p < el_p, dtype=bool)
+        parcel[above_el] = T[above_el].to(parcel.units)
+    skew.shade_cape(p, T, parcel, alpha=SKEWT_CAPE_ALPHA)
+    skew.shade_cin(p, T, parcel, alpha=SKEWT_CIN_ALPHA)
+    if cape is not None and cin is not None:
+        _add_skewt_annot_box(skew, [
+            f"CIN  : {cin.m:.1f} J/kg",
+            f"CAPE : {cape.m:.1f} J/kg",
+        ])
+    if fig is not None and output_dir is not None:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+        out_path = out_dir / f"skewt_cape_cin_{timestamp}.png"
+        fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight", facecolor="white")
+        print(f"[OK] Saved: {out_path.resolve()}")
 
 
 def plot_skewt_instability_panel(p, T, Td, parcel, *, lcl_p, lfc_p, el_p,
@@ -3239,20 +3303,11 @@ def plot_skewt_instability_panel(p, T, Td, parcel, *, lcl_p, lfc_p, el_p,
     if annotate:
         lines = []
         if cape is not None and cin is not None:
-            lines.append(f"CAPE    : {cape.m:.0f} J/kg")
-            lines.append(f"CIN     : {cin.m:.0f} J/kg")
-        lines.append(f"MUCAPE  : {mu_cape.m:.0f} J/kg")
-        lines.append(f"K-index : {k.m:.0f} °C")
-        skew.ax.text(
-            SKEWT_ANNOT_X, 1 - SKEWT_ANNOT_X,
-            "\n".join(lines),
-            transform=skew.ax.transAxes,
-            fontsize=SKEWT_ANNOT_FONTSIZE, va="top", ha="left",
-            linespacing=SKEWT_ANNOT_LINESPACING,
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                      edgecolor="#cccccc", alpha=SKEWT_ANNOT_ALPHA),
-            zorder=6,
-        )
+            lines.append(f"CIN     : {cin.m:.1f} J/kg")
+            lines.append(f"CAPE    : {cape.m:.1f} J/kg")
+        lines.append(f"MUCAPE  : {mu_cape.m:.1f} J/kg")
+        lines.append(f"K-index : {k.m:.1f} °C")
+        _add_skewt_annot_box(skew, lines)
     if output_dir is not None:
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -3264,7 +3319,7 @@ def plot_skewt_instability_panel(p, T, Td, parcel, *, lcl_p, lfc_p, el_p,
 
 
 def plot_skewt_winds(p, T, Td, parcel, u, v, *, lcl_p, lfc_p, el_p,
-                     mu_cape, mu_cin, k, shear_mag,
+                     mu_cape, k, shear_mag,
                      cape=None, cin=None,
                      p_min, p_max, t_min, t_max,
                      station_id=None, valid_dt=None,
@@ -3296,8 +3351,6 @@ def plot_skewt_winds(p, T, Td, parcel, u, v, *, lcl_p, lfc_p, el_p,
         EL pressure level in hPa, or None if not computable.
     mu_cape : pint.Quantity
         Most Unstable Convective Available Potential Energy in J/kg.
-    mu_cin : pint.Quantity
-        Most Unstable Convective Inhibition in J/kg.
     k : pint.Quantity
         K-index in °C.
     shear_mag : float
@@ -3319,7 +3372,7 @@ def plot_skewt_winds(p, T, Td, parcel, u, v, *, lcl_p, lfc_p, el_p,
     """
     fig, skew = plot_skewt_instability_panel(
         p, T, Td, parcel, lcl_p=lcl_p, lfc_p=lfc_p, el_p=el_p,
-        mu_cape=mu_cape, mu_cin=mu_cin, k=k,
+        mu_cape=mu_cape, k=k,
         p_min=p_min, p_max=p_max, t_min=t_min, t_max=t_max,
         annotate=False, output_dir=None,
     )
@@ -3338,22 +3391,12 @@ def plot_skewt_winds(p, T, Td, parcel, u, v, *, lcl_p, lfc_p, el_p,
                     v[mask][::SKEWT_WIND_STRIDE], length=BARB_LENGTH * BARB_SCALE_UPPER)
     lines = []
     if cape is not None and cin is not None:
-        lines.append(f"CAPE    : {cape.m:.0f} J/kg")
-        lines.append(f"CIN     : {cin.m:.0f} J/kg")
-    lines.append(f"MUCAPE  : {mu_cape.m:.0f} J/kg")
-    lines.append(f"MU CIN  : {mu_cin.m:.0f} J/kg")
-    lines.append(f"K-index : {k.m:.0f} °C")
+        lines.append(f"CIN     : {cin.m:.1f} J/kg")
+        lines.append(f"CAPE    : {cape.m:.1f} J/kg")
+    lines.append(f"MUCAPE  : {mu_cape.m:.1f} J/kg")
+    lines.append(f"K-index : {k.m:.1f} °C")
     lines.append(f"0–6 km shear : {shear_mag:.1f} kt")
-    skew.ax.text(
-        SKEWT_ANNOT_X, 1 - SKEWT_ANNOT_X,
-        "\n".join(lines),
-        transform=skew.ax.transAxes,
-        fontsize=SKEWT_ANNOT_FONTSIZE, va="top", ha="left",
-        linespacing=SKEWT_ANNOT_LINESPACING,
-        bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                  edgecolor="#cccccc", alpha=SKEWT_ANNOT_ALPHA),
-        zorder=7,
-    )
+    _add_skewt_annot_box(skew, lines)
     if output_dir is not None:
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
