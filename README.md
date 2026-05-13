@@ -7,6 +7,7 @@
 | 01 | surface_weather_reports | Application of a surface **weather data analysis workflow** that reflects **operational meteorology** practices |
 | 02 | synoptic_analysis_I | Application of a **synoptic analysis** workflow through surface contouring, and **upper-air station plotting** at 500 hPa |
 | 03 | synoptic_analysis_II | **Upper-air synoptic analysis** from gridded GFS model fields at 850, 700, 500, and 250 hPa, with integrated surface and upper-air diagnosis |
+| 04 | skewt_analysis | **Thermodynamic analysis** on the Skew-T log-P diagram: parcel theory, convective levels (LCL, LFC, EL), CAPE, CIN, MUCAPE, K-index, and vertical wind shear |
 
 
 > Notebooks are added progressively throughout the course.
