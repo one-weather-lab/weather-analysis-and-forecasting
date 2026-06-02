@@ -7,8 +7,8 @@ Purpose: Surface and upper-air map visualizations for the European domain.
          PNGs. Covers both Greece-scale and continental-scale domains.
 
 Author(s): Christos Giannaros, One Weather Lab, University of Ioannina <chris.giannaros@uoi.gr>
-Last updated: 2026-05-12
-Version: 3.0.0
+Last updated: 2026-05-25
+Version: 3.3.2
 License: MIT
 """
 
@@ -17,6 +17,7 @@ License: MIT
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 
+import io
 import math
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,9 +25,12 @@ from typing import Optional
 
 import logging
 
+from PIL import Image
+
 import matplotlib.pyplot as plt
 import matplotlib.collections as mcoll
 from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
+from matplotlib.ticker import FuncFormatter
 from matplotlib.transforms import blended_transform_factory
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import cartopy.crs as ccrs
@@ -174,6 +178,15 @@ _pvort_cmap = LinearSegmentedColormap.from_list(
     N=256,
 )
 
+# Pre-built 700 hPa RH colormap with three filled bands above 70, 80, 90 %
+# Shared by plot_upper_air_overview and plot_four_panel_forecast_animation.
+_N_RH    = len(RH_CONTOUR_LEVELS_700) - 1
+_RH_CMAP = ListedColormap([plt.cm.BuGn(v) for v in (0.50, 0.70, 0.90)][:_N_RH])
+_RH_NORM = BoundaryNorm(RH_CONTOUR_LEVELS_700, ncolors=_N_RH)
+
+# 250 hPa isotach fill levels (m/s), shared by overview and animation.
+_ISO_LEVS = list(range(ISOTACH_MIN, ISOTACH_MAX, ISOTACH_INTERVAL))
+
 # [4-panel upper-air overview layout]
 FIG_SIZE_SCALE_OVERVIEW      = 1.2    # figure size scale relative to FIG_SIZE_IN
 FIG_HEIGHT_OVERVIEW          = 14     # figure height in inches for 4-panel overview (overrides FIG_SIZE_IN[1] × scale)
@@ -185,6 +198,11 @@ BARB_STRIDE_SCALE_OVERVIEW   = 2      # barb thinning stride multiplier for 4-pa
 BARB_SCALE_OVERVIEW          = 0.70   # barb length scale for 4-panel relative to BARB_SCALE_STATION
 FONT_SCALE_SUPTITLE_OVERVIEW = 0.65   # suptitle font scale relative to FONT_TITLE
 FIG_DPI_OVERVIEW             = 200    # output DPI for 4-panel overview (lower than single-panel)
+
+# [GFS forecast animation]
+_GIF_INTERVAL_MS = 700   # milliseconds per frame in exported GIF
+SUBPLOT_HSPACE_OVERVIEW_FORECAST      = 0.09   # vertical subplot spacing (4-panel only)
+SUBPLOT_WSPACE_OVERVIEW_FORECAST      = 0.02   # horizontal subplot spacing (2-panel only)
 
 # [500 hPa RAOB station plot]
 BARB_SCALE_500_RAOB  = 0.80  # barb length scale for 500 hPa RAOB station plot
@@ -419,6 +437,19 @@ def _gfs_title(field_label: str, valid_time: str) -> str:
     """
     vt = pd.Timestamp(valid_time, tz="UTC").strftime("%Y-%m-%d %H:%M UTC")
     return f"{field_label}\nGFS analysis valid: {vt}"
+
+
+def _gefs_title(field_label: str, init_date: str, lead_time_h: int) -> str:
+    """
+    Format a consistent GEFS ensemble map title.
+    """
+    init_ts  = pd.Timestamp(init_date)
+    valid_ts = init_ts + pd.Timedelta(hours=lead_time_h)
+    return (
+        f"{field_label}\n"
+        f"GEFS +{lead_time_h} h | Init: {init_ts.strftime('%Y-%m-%d %H:%M')} UTC | "
+        f"Valid: {valid_ts.strftime('%Y-%m-%d %H:%M')} UTC"
+    )
 
 
 def _add_skewt_annot_box(skew, lines: list[str]) -> None:
@@ -1902,7 +1933,6 @@ def plot_gfs_surface_chart(
     sigma_mslp: float = SIGMA_SURFACE,
     t2m_interval: float = T2M_INTERVAL,
     output_dir: str = "../outputs",
-    show: bool = True,
 ) -> str:
     """
     GFS-analysis surface chart: MSLP isobars, H/L centers, 10 m wind barbs,
@@ -1993,11 +2023,257 @@ def plot_gfs_surface_chart(
     out_path  = out_dir / f"gfs_surface_chart_{timestamp}.png"
     fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight",
                 facecolor="white", edgecolor="none")
-    if show:
-        plt.show()
-    else:
-        plt.close(fig)
+    plt.show()
     return str(out_path.resolve())
+
+
+# [GEFS ensemble surface chart]
+
+def plot_ensemble_mean_spread(
+    mean_field: xr.DataArray,
+    spread_field: xr.DataArray,
+    domain: tuple[float, float, float, float],
+    lead_time_h: int,
+    init_date: str,
+    output_dir: str | Path = "../outputs",
+    dpi: int = FIG_DPI_OVERVIEW,
+) -> Path:
+    """
+    Two-panel static map of GEFS ensemble mean and spread for MSLP.
+
+    Left panel: ensemble mean MSLP contoured at MSLP_INTERVAL interval with
+    labeled isobars and H/L pressure centers. Right panel: ensemble standard
+    deviation shaded with a perceptually uniform colormap; faint mean isobars
+    for spatial reference.
+
+    Parameters
+    ----------
+    mean_field : xr.DataArray
+        Ensemble mean MSLP at a single lead time (Pa), dims (latitude, longitude).
+    spread_field : xr.DataArray
+        Ensemble standard deviation of MSLP (Pa), same dims.
+    domain : tuple of float
+        ``(lon_min, lon_max, lat_min, lat_max)`` in degrees. The map extent
+        is controlled by ``_setup_europe_map`` (``EUROPE_EXTENT``); this
+        parameter is retained for API compatibility.
+    lead_time_h : int
+        Lead time in hours; used in the panel titles.
+    init_date : str
+        Initialization date string; used in the panel titles.
+    output_dir : str or Path
+        Directory for the saved PNG. Created if absent.
+    dpi : int
+        Output resolution (dots per inch).
+
+    Returns
+    -------
+    Path
+        Absolute path to the saved PNG.
+    """
+    out_dir  = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    data_crs = ccrs.PlateCarree()
+
+    # Pa → hPa, NaN-safe smoothing
+    mean_np   = _smooth_field(mean_field.values   / 100.0, SIGMA_SURFACE)
+    spread_np = _smooth_field(spread_field.values / 100.0, SIGMA_SURFACE)
+
+    lat = mean_field.latitude.values
+    lon = mean_field.longitude.values
+    lon_2d, lat_2d = np.meshgrid(lon, lat)
+
+    p_min     = np.floor(np.nanmin(mean_np) / MSLP_INTERVAL) * MSLP_INTERVAL
+    p_max     = np.ceil( np.nanmax(mean_np) / MSLP_INTERVAL) * MSLP_INTERVAL
+    mean_levs = np.arange(p_min, p_max + MSLP_INTERVAL, MSLP_INTERVAL)
+
+    proj = ccrs.PlateCarree()
+    fig, (ax_mean, ax_spread) = plt.subplots(
+        1, 2,
+        figsize=(FIG_SIZE_IN[0] * 2, FIG_SIZE_IN[1]),
+        subplot_kw={"projection": proj},
+        gridspec_kw={"wspace": SUBPLOT_WSPACE_OVERVIEW_FORECAST},
+    )
+    fig.patch.set_facecolor("w")
+
+    _setup_europe_map(ax=ax_mean)
+    _setup_europe_map(ax=ax_spread)
+
+    # ── Left panel: ensemble mean MSLP isobars + H/L centers ────────────────
+    cs_mean = ax_mean.contour(
+        lon_2d, lat_2d, mean_np,
+        levels=mean_levs, colors="black", linewidths=1.2,
+        transform=data_crs,
+    )
+    ax_mean.clabel(
+        cs_mean, cs_mean.levels[::GPH_LABEL_STRIDE], fmt="%d",
+        fontsize=max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR)), inline=True,
+    )
+    plot_maxmin_points(ax_mean, lon, lat, mean_np, "max",
+                       n_size=N_SIZE, symbol_size=SYMBOL_SIZE,
+                       min_sep_deg=HL_MIN_SEP_DEG, transform=data_crs)
+    plot_maxmin_points(ax_mean, lon, lat, mean_np, "min",
+                       n_size=N_SIZE, symbol_size=SYMBOL_SIZE,
+                       min_sep_deg=HL_MIN_SEP_DEG, transform=data_crs)
+    ax_mean.set_title(
+        _gefs_title("GEFS Ensemble Mean MSLP [contours, hPa]", init_date, lead_time_h),
+        fontsize=FONT_TITLE * FONT_SCALE_UPPER_TITLE, loc="left", fontweight="bold",
+    )
+    _div_mean = make_axes_locatable(ax_mean)
+    _cax_mean = _div_mean.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD,
+                                      axes_class=plt.Axes)
+    _cax_mean.set_visible(False)
+
+    # ── Right panel: ensemble spread shaded + faint mean contours ───────────
+    spread_max  = max(float(np.nanmax(spread_np)), 1.0)
+    # Shading starts at 1.0 hPa; values below are unshaded (background).
+    spread_levs = np.arange(1.0, spread_max + 0.5, 0.5)
+    im_spread = ax_spread.contourf(
+        lon_2d, lat_2d, spread_np,
+        levels=spread_levs, cmap="Purples", transform=data_crs,
+        extend="max",
+    )
+    ax_spread.contour(
+        lon_2d, lat_2d, mean_np,
+        levels=mean_levs[::2], colors="black", linewidths=0.4,
+        alpha=0.4, transform=data_crs,
+    )
+    ax_spread.set_title(
+        _gefs_title("GEFS Ensemble Spread MSLP [std dev, hPa]", init_date, lead_time_h),
+        fontsize=FONT_TITLE * FONT_SCALE_UPPER_TITLE, loc="left", fontweight="bold",
+    )
+    _div_spread = make_axes_locatable(ax_spread)
+    _cax_spread = _div_spread.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD,
+                                          axes_class=plt.Axes)
+    cb = fig.colorbar(im_spread, cax=_cax_spread)
+    cbar_ticks = np.arange(1.0, spread_max + 0.5, 0.5)
+    cb.set_ticks(cbar_ticks[cbar_ticks <= spread_max])
+    cb.set_label("hPa", fontsize=max(1, round(FONT_LABEL * FONT_SCALE_UPPER_CBAR)))
+    cb.ax.tick_params(labelsize=max(1, round(FONT_LABEL * FONT_SCALE_UPPER_CBAR)))
+
+    timestamp = pd.Timestamp.now("UTC").strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"gefs_mslp_mean_spread_{timestamp}.png"
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+
+    return out_path.resolve()
+
+
+def plot_compound_probability_animation(
+    compound_prob: xr.DataArray,
+    domain: tuple[float, float, float, float],
+    init_date: str,
+    max_signal_lead_h: int,
+    output_dir: str | Path,
+    case: str = "",
+    dpi: int = FIG_DPI_OVERVIEW,
+) -> Path:
+    """
+    Animate the compound probability field across the forecast horizon.
+
+    Parameters
+    ----------
+    compound_prob : xr.DataArray
+        Compound probability field, dims (valid_time, latitude, longitude).
+    domain : tuple of float
+        ``(lon_min, lon_max, lat_min, lat_max)`` in degrees. Retained for
+        API compatibility; map extent is controlled by ``_setup_europe_map``.
+    init_date : str
+        Initialization date string; used in frame titles.
+    max_signal_lead_h : int
+        Lead time of maximum compound signal; annotated on the relevant frame.
+    output_dir : str or Path
+        Directory for the exported GIF and frame PNGs. Created if absent.
+    case : str
+        Active case label from ``CASE_DEFINITIONS`` (e.g. ``"severe_convection"``);
+        appended to the title as ``"Compound Probability Product: {case}"``.
+    dpi : int
+        Output resolution (dots per inch). Defaults to ``FIG_DPI_OVERVIEW``.
+
+    Returns
+    -------
+    Path
+        Absolute path to the saved animated GIF. Individual frame PNGs are
+        also saved to ``output_dir`` as
+        ``compound_probability_{init_yyyymmdd_hhmm}_f{NNN}h.png``.
+    """
+    _fs = max(1, round(FONT_LABEL * FONT_SCALE_UPPER_CBAR * FONT_SCALE_TITLE_OVERVIEW))
+    _fs_prob_cbar = _fs + 2  
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    data_crs  = ccrs.PlateCarree()
+    lat       = compound_prob.latitude.values
+    lon       = compound_prob.longitude.values
+    lead_vals = compound_prob.valid_time.values
+
+    compound_max = max(float(compound_prob.max()), 1e-6)
+    cp_levels    = np.linspace(0, compound_max, 21)[1:]
+
+    fig = plt.figure(figsize=FIG_SIZE_IN)
+    fig.patch.set_facecolor("w")
+    ax = fig.add_subplot(1, 1, 1, projection=data_crs)
+
+    _setup_europe_map(ax=ax)
+    first_lead = int(lead_vals[0])
+    im = ax.contourf(
+        lon, lat, compound_prob.sel(valid_time=first_lead).values,
+        levels=cp_levels, cmap="YlOrRd", transform=data_crs, extend="max",
+    )
+    div = make_axes_locatable(ax)
+    cax = div.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD, axes_class=plt.Axes)
+    cb  = fig.colorbar(im, cax=cax)
+    cb.set_label("Compound probability [%]", fontsize=_fs)
+    cb.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x * 100:.0f}"))
+    cb.ax.tick_params(labelsize=_fs_prob_cbar)
+
+    init_safe = pd.Timestamp(init_date).strftime("%Y%m%d_%H%M")
+    timestamp = pd.Timestamp.now("UTC").strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"compound_probability_animation_{timestamp}.gif"
+    gif_frames: list[Image.Image] = []
+
+    for lead_h in [int(lt) for lt in lead_vals]:
+        ax.cla()
+        _setup_europe_map(ax=ax)
+
+        ax.contourf(
+            lon, lat, compound_prob.sel(valid_time=lead_h).values,
+            levels=cp_levels, cmap="YlOrRd", transform=data_crs, extend="max",
+        )
+
+        _field_label = (
+            f"Compound Probability Product: {case}" if case
+            else "Compound Probability Product"
+        )
+        title = _gefs_title(_field_label, init_date, lead_h)
+        ax.set_title(
+            title,
+            fontsize=FONT_TITLE * FONT_SCALE_UPPER_TITLE,
+            loc="left",
+            fontweight="bold",
+        )
+
+        frame_path = out_dir / f"compound_probability_{init_safe}_f{lead_h:03d}h.png"
+        fig.savefig(frame_path, dpi=dpi, bbox_inches="tight",
+                    facecolor="white", edgecolor="none")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight",
+                    facecolor="white", edgecolor="none")
+        buf.seek(0)
+        gif_frames.append(Image.open(buf).copy())
+
+    gif_frames[0].save(
+        str(out_path),
+        format="GIF",
+        save_all=True,
+        append_images=gif_frames[1:],
+        duration=_GIF_INTERVAL_MS,
+        loop=0,
+        optimize=False,
+    )
+    plt.close(fig)
+
+    return out_path.resolve()
 
 
 # [Upper-air station plot]
@@ -2470,7 +2746,6 @@ def plot_500hpa_relative_vorticity(
     gph_interval: float = GPH_INTERVAL_500,
     sigma: float = SIGMA_UPPER,
     output_dir: str = "../outputs",
-    show: bool = True,
 ) -> str:
     """
     500 hPa relative vorticity (fill), geopotential height (contours), and
@@ -2556,10 +2831,7 @@ def plot_500hpa_relative_vorticity(
     out_path  = out_dir / f"500hpa_vorticity_{timestamp}.png"
     fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight",
                 facecolor="white", edgecolor="none")
-    if show:
-        plt.show()
-    else:
-        plt.close(fig)
+    plt.show()
     return str(out_path.resolve())
 
 
@@ -2569,7 +2841,6 @@ def plot_500hpa_relative_vorticity_advection(
     gph_interval: float = GPH_INTERVAL_500,
     sigma: float = SIGMA_UPPER,
     output_dir: str = "../outputs",
-    show: bool = True,
 ) -> str:
     """
     500 hPa relative vorticity advection (fill, PVA red / NVA blue),
@@ -2657,10 +2928,7 @@ def plot_500hpa_relative_vorticity_advection(
     out_path  = out_dir / f"500hpa_vorticity_advection_{timestamp}.png"
     fig.savefig(out_path, dpi=FIG_DPI, bbox_inches="tight",
                 facecolor="white", edgecolor="none")
-    if show:
-        plt.show()
-    else:
-        plt.close(fig)
+    plt.show()
     return str(out_path.resolve())
 
 
@@ -2933,6 +3201,236 @@ def plot_upper_air_overview(
                 facecolor="white", edgecolor="none")
     plt.show()
     return str(out_path.resolve())
+
+
+def plot_four_panel_forecast_animation(
+    dataset: xr.Dataset,
+    domain: tuple[float, float, float, float],
+    output_dir: str | Path,
+    dpi: int = FIG_DPI_OVERVIEW,
+) -> Path:
+    """
+    Build an animated four-panel upper-air chart from a GFS forecast Dataset.
+
+    One frame per lead time. Panel layout:
+
+    - top-left    : 850 hPa temperature shaded + GPH contours + wind barbs
+    - top-right   : 700 hPa relative humidity shaded + GPH contours
+    - bottom-left : 500 hPa GPH contoured with wind barbs
+    - bottom-right: 250 hPa wind speed shaded + GPH + jet-core contour + barbs
+
+    Parameters
+    ----------
+    dataset : xr.Dataset
+        GFS forecast Dataset from ``fetch_gfs_forecast()``.
+        Required variables: ``t_850``, ``gh_850``, ``u_850``, ``v_850``,
+        ``rh_700``, ``gh_700``, ``gh_500``, ``u_500``, ``v_500``,
+        ``u_250``, ``v_250``, ``gh_250``.
+    domain : tuple of float
+        ``(lon_min, lon_max, lat_min, lat_max)`` in degrees. The map extent
+        is controlled by ``_setup_europe_map`` (``EUROPE_EXTENT``); this
+        parameter is retained for API compatibility.
+    output_dir : str or Path
+        Directory for the exported GIF. Created if absent.
+    dpi : int
+        Output resolution (dots per inch). Defaults to ``FIG_DPI_OVERVIEW``.
+
+    Returns
+    -------
+    Path
+        Absolute path to the saved animated GIF. Individual frame PNGs are
+        also saved to ``output_dir`` as
+        ``gfs_frame_<init_yyyymmdd_hhmm>_fxx<NNN>h.png``.
+    """
+    out_dir  = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    data_crs   = ccrs.PlateCarree()
+    lead_times = dataset.valid_time.values
+    init_date  = dataset.attrs.get("init_date", "unknown")
+
+    lon    = dataset.longitude.values
+    lat    = dataset.latitude.values
+    lon_2d, lat_2d = np.meshgrid(lon, lat)
+
+    _ft = max(1, round(FONT_TITLE * FONT_SCALE_TITLE_OVERVIEW))
+    _fl = max(1, round(FONT_LABEL * FONT_SCALE_CONTOUR * FONT_SCALE_CONTOUR_OVERVIEW))
+    _fs = max(1, round(FONT_LABEL * FONT_SCALE_UPPER_CBAR * FONT_SCALE_TITLE_OVERVIEW))
+    _st = _BARB_STRIDE * BARB_STRIDE_SCALE_OVERVIEW
+    _bl = BARB_LENGTH * BARB_SCALE_STATION * BARB_SCALE_OVERVIEW
+
+    def _smooth(arr: np.ndarray) -> np.ndarray:
+        """NaN-safe Gaussian smooth via weighted convolution."""
+        arr = arr.astype(float)
+        valid = np.isfinite(arr)
+        if valid.all():
+            return gaussian_filter(arr, sigma=SIGMA_UPPER)
+        if not valid.any():
+            return arr.copy()
+        filled  = np.where(valid, arr, 0.0)
+        weights = valid.astype(float)
+        return gaussian_filter(filled, sigma=SIGMA_UPPER) / np.maximum(
+            gaussian_filter(weights, sigma=SIGMA_UPPER), 1e-12,
+        )
+
+    def _gph_cs(ax, gph_dam, interval, color="black"):
+        if not np.isfinite(gph_dam).any():
+            LOG.warning("_gph_cs: all-NaN GPH field — contour skipped")
+            return
+        g_min  = np.floor(np.nanmin(gph_dam) / interval) * interval
+        g_max  = np.ceil( np.nanmax(gph_dam) / interval) * interval
+        g_levs = np.arange(g_min, g_max + interval, interval)
+        cs     = ax.contour(lon_2d, lat_2d, gph_dam, levels=g_levs,
+                            colors=color, linewidths=0.8, transform=data_crs)
+        ax.clabel(cs, cs.levels[::GPH_LABEL_STRIDE], fmt="%d", fontsize=_fl, inline=True)
+
+    def _cbar_anim(ax, cf, label, ticks=None):
+        div = make_axes_locatable(ax)
+        cax = div.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD, axes_class=plt.Axes)
+        cb  = fig.colorbar(cf, cax=cax)
+        cb.set_label(label, fontsize=_fs)
+        if ticks is not None:
+            cb.set_ticks(ticks)
+        cb.ax.tick_params(labelsize=_fs)
+
+    def _draw_panels(axes, ds_step, lead_h):
+        """Clear and redraw all four panels for one forecast lead time."""
+        ax_tl, ax_tr, ax_bl, ax_br = axes
+        for ax in axes:
+            ax.cla()
+            _setup_europe_map(ax=ax)
+
+        gph_850 = _smooth(ds_step["gh_850"].values / 10.0)
+        gph_700 = _smooth(ds_step["gh_700"].values / 10.0)
+        gph_500 = _smooth(ds_step["gh_500"].values / 10.0)
+        gph_250 = _smooth(ds_step["gh_250"].values / 10.0)
+
+        cycle      = pd.Timestamp(init_date)
+        valid_dt   = cycle + pd.Timedelta(hours=lead_h)
+        time_label = (
+            f"Init: {cycle.strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"Valid: {valid_dt.strftime('%Y-%m-%d %H:%M UTC')}"
+        )
+
+        # ── TL: 850 hPa temperature shaded + GPH contours + wind barbs ─────────
+        t850   = _smooth(ds_step["t_850"].values - 273.15)
+        t_levs = np.arange(TEMP_MIN_850, TEMP_MAX_850 + ISOTHERM_INTERVAL_850, ISOTHERM_INTERVAL_850)
+        im_tl  = ax_tl.contourf(
+            lon_2d, lat_2d, t850, levels=t_levs,
+            cmap="RdYlBu_r", transform=data_crs, extend="both",
+        )
+        _gph_cs(ax_tl, gph_850, GPH_INTERVAL_850)
+        ax_tl.barbs(
+            lon_2d[::_st, ::_st], lat_2d[::_st, ::_st],
+            ds_step["u_850"].values[::_st, ::_st], ds_step["v_850"].values[::_st, ::_st],
+            length=_bl, transform=data_crs, color="black",
+        )
+        ax_tl.set_title(
+            "850 hPa Temperature [fill, °C],\nGeopotential Height [contours, dam], Wind [barbs]",
+            fontsize=_ft, loc="left", fontweight="bold",
+        )
+        ax_tl.set_title(time_label, fontsize=_ft, loc="right")
+
+        # ── TR: 700 hPa RH shaded + GPH contours (steelblue) ──────────────────
+        rh700 = _smooth(ds_step["rh_700"].values)
+        im_tr = ax_tr.contourf(
+            lon_2d, lat_2d, rh700, levels=RH_CONTOUR_LEVELS_700,
+            cmap=_RH_CMAP, norm=_RH_NORM, transform=data_crs, extend="neither",
+        )
+        _gph_cs(ax_tr, gph_700, GPH_INTERVAL_700, color="steelblue")
+        ax_tr.set_title(
+            "700 hPa Relative Humidity [fill, %],\nGeopotential Height [contours, dam]",
+            fontsize=_ft, loc="left", fontweight="bold",
+        )
+        ax_tr.set_title(time_label, fontsize=_ft, loc="right")
+
+        # ── BL: 500 hPa GPH contoured + wind barbs ────────────────────────────
+        _gph_cs(ax_bl, gph_500, GPH_INTERVAL_500)
+        ax_bl.barbs(
+            lon_2d[::_st, ::_st], lat_2d[::_st, ::_st],
+            ds_step["u_500"].values[::_st, ::_st], ds_step["v_500"].values[::_st, ::_st],
+            length=_bl, transform=data_crs, color="black",
+        )
+        ax_bl.set_title(
+            "500 hPa Geopotential Height [contours, dam],\nWind [barbs]",
+            fontsize=_ft, loc="left", fontweight="bold",
+        )
+        ax_bl.set_title(time_label, fontsize=_ft, loc="right")
+
+        # ── BR: 250 hPa isotachs + jet core + GPH + barbs ─────────────────────
+        spd250 = _smooth(
+            np.sqrt(ds_step["u_250"].values**2 + ds_step["v_250"].values**2)
+        )
+        im_br = ax_br.contourf(
+            lon_2d, lat_2d, spd250, levels=_ISO_LEVS,
+            cmap="YlOrRd", transform=data_crs, extend="max",
+        )
+        ax_br.contour(
+            lon_2d, lat_2d, spd250, levels=[JET_CORE_LEVEL],
+            colors=JET_CORE_COLOR, linewidths=JET_CORE_LINEWIDTH * 0.8, transform=data_crs,
+        )
+        _gph_cs(ax_br, gph_250, GPH_INTERVAL_250)
+        ax_br.barbs(
+            lon_2d[::_st, ::_st], lat_2d[::_st, ::_st],
+            ds_step["u_250"].values[::_st, ::_st], ds_step["v_250"].values[::_st, ::_st],
+            length=_bl, transform=data_crs, color="black",
+        )
+        ax_br.set_title(
+            "250 hPa Wind Speed [fill, m/s],\nGeopotential Height [contours, dam], Wind [barbs]",
+            fontsize=_ft, loc="left", fontweight="bold",
+        )
+        ax_br.set_title(time_label, fontsize=_ft, loc="right")
+
+        return im_tl, im_tr, im_br
+
+    fig, axes_2d = plt.subplots(
+        2, 2,
+        figsize=(FIG_SIZE_IN[0] * FIG_SIZE_SCALE_OVERVIEW, FIG_HEIGHT_OVERVIEW),
+        subplot_kw={"projection": data_crs},
+        gridspec_kw={"wspace": SUBPLOT_WSPACE_OVERVIEW, "hspace": SUBPLOT_HSPACE_OVERVIEW_FORECAST},
+    )
+    fig.patch.set_facecolor("w")
+    axes = axes_2d.flatten()
+
+    lead_h_0 = int(lead_times[0])
+    im_tl, im_tr, im_br = _draw_panels(axes, dataset.sel(valid_time=lead_h_0), lead_h_0)
+    _cbar_anim(axes[0], im_tl, "[ °C ]",
+               ticks=np.arange(TEMP_MIN_850, TEMP_MAX_850 + CBAR_TEMP_TICK_850, CBAR_TEMP_TICK_850))
+    _cbar_anim(axes[1], im_tr, "[ % ]", ticks=RH_CONTOUR_LEVELS_700)
+    _cbar_anim(axes[3], im_br, "[ m/s ]",
+               ticks=list(range(ISOTACH_MIN, ISOTACH_MAX, CBAR_ISOTACH_TICK_250)))
+    _div_bl = make_axes_locatable(axes[2])
+    _cax_bl = _div_bl.append_axes("right", size=CBAR_SIZE, pad=CBAR_PAD, axes_class=plt.Axes)
+    _cax_bl.set_visible(False)
+
+    timestamp = pd.Timestamp.now("UTC").strftime("%Y%m%d_%H%M")
+    out_path  = out_dir / f"gfs_four_panel_animation_{timestamp}.gif"
+    cycle_ts  = pd.Timestamp(init_date)
+    init_safe = cycle_ts.strftime("%Y%m%d_%H%M")
+    gif_frames: list[Image] = []
+
+    for lead_h in [int(lt) for lt in lead_times]:
+        _draw_panels(axes, dataset.sel(valid_time=lead_h), lead_h)
+        frame_path = out_dir / f"gfs_frame_{init_safe}_f{lead_h:03d}h.png"
+        fig.savefig(frame_path, dpi=dpi, bbox_inches="tight",
+                    facecolor="white", edgecolor="none")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight",
+                    facecolor="white", edgecolor="none")
+        buf.seek(0)
+        gif_frames.append(Image.open(buf).copy())
+
+    gif_frames[0].save(
+        str(out_path),
+        format="GIF",
+        save_all=True,
+        append_images=gif_frames[1:],
+        duration=_GIF_INTERVAL_MS,
+        loop=0,
+        optimize=False,
+    )
+    plt.close(fig)
+
+    return out_path.resolve()
 
 
 # [Skew-T diagrams]

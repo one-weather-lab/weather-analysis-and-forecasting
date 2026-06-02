@@ -49,7 +49,7 @@ from .herbie_gfs import (
 # -----------------------------------------------------------------------------
 # Data fetching — GEFS ensemble
 # -----------------------------------------------------------------------------
-from .herbie_gefs import resolve_gefs_data_folder, fetch_gefs_members, build_gefs_forecast_da
+from .herbie_gefs import resolve_gefs_data, fetch_gefs_members, build_gefs_forecast_da
 
 # -----------------------------------------------------------------------------
 # Nearest-grid-point lookup and ensemble meteogram
@@ -180,7 +180,7 @@ __all__ = [
     "fetch_gfs_forecast",
     "build_gfs_forecast_ds",
     # herbie_gefs
-    "resolve_gefs_data_folder",
+    "resolve_gefs_data",
     "fetch_gefs_members",
     "build_gefs_forecast_da",
     # meteogram_helpers
