@@ -59,6 +59,9 @@ _GEFS_SEARCH = {
     "snod"          : r":SNOD:surface:",
 }
 
+# [Wind variable keys]
+_WIND_KEYS = {"wind_sfc", "wind_6km"}
+
 # [Period-based variables absent from pgrb2s at fxx=0 — no accumulation/max at init]
 _SFLUX_ABSENT_AT_FXX0 = {"precip_6h", "tmax_2m", "tmin_2m"}
 
