@@ -302,15 +302,15 @@ def _grib_glob_gefs(
     """
     Return glob matches for a single GEFS member GRIB at the specified lead time.
 
-   GEFS files are locally stored in ``{data_dir}/gefs/{YYYYMMDD}/`` (flat structure,
-    consistent with the GFS cache layout). File naming follows NOAA conventions:
-    ``[subset_{hash}__]ge{member}.t{HH}z.pgrb2s.0p25.f{FFF}``
-    where member is ``c00`` (control) or ``p01``–``p30`` (perturbed).
+    Three naming conventions are handled:
+    - GEFSv12 / post-2020:  ``[subset_{hash}__]ge{m}.t{HH}z.pgrb2s.0p25.f006``
+    - Pre-2020 (3-digit):   ``[subset_{hash}__]ge{m}.t{HH}z.pgrb2af006``  (e.g. 2017)
+    - Pre-2020 (2-digit):   ``[subset_{hash}__]ge{m}.t{HH}z.pgrb2af06``   (e.g. 2019)
 
     Parameters
     ----------
     date_dir : Path
-        The date directory (``{data_dir}/gefs/{YYYYMMDD}/``) to search.
+        The date directory (``{data_dir}/gefs/{YYYYMMDD}/{variable}/``) to search.
     cycle : pd.Timestamp
         UTC cycle timestamp; used to extract the two-digit cycle hour.
     member_id : int
@@ -325,7 +325,15 @@ def _grib_glob_gefs(
     """
     hz = f"{cycle.hour:02d}"
     member = _member_str(member_id)
-    return list(date_dir.glob(f"*ge{member}.t{hz}z*.f{fxx:03d}"))
+    # GEFSv12 (post ~2020): ...pgrb2s.0p25.f006
+    matches = list(date_dir.glob(f"*ge{member}.t{hz}z*.f{fxx:03d}"))
+    if not matches:
+        # Old format 3-digit fxx (e.g. 2017): ...pgrb2af006
+        matches = list(date_dir.glob(f"*ge{member}.t{hz}z*.pgrb2af{fxx:03d}"))
+    if not matches:
+        # Old format 2-digit fxx (e.g. 2019): ...pgrb2af06
+        matches = list(date_dir.glob(f"*ge{member}.t{hz}z*.pgrb2af{fxx:02d}"))
+    return matches
 
 
 # [Resolve GEFS data folder]
