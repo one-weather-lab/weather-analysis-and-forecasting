@@ -37,9 +37,24 @@ from .contouring_helpers import (
 )
 
 # -----------------------------------------------------------------------------
-# Data fetching — GFS analysis
+# Data fetching — GFS analysis and forecast
 # -----------------------------------------------------------------------------
-from .herbie_gfs import fetch_gfs_analysis
+from .herbie_gfs import (
+    resolve_gfs_data_folder,
+    fetch_gfs_analysis,
+    fetch_gfs_forecast,
+    build_gfs_forecast_ds,
+)
+
+# -----------------------------------------------------------------------------
+# Data fetching — GEFS ensemble
+# -----------------------------------------------------------------------------
+from .herbie_gefs import resolve_gefs_data_folder, fetch_gefs_members, build_gefs_forecast_da
+
+# -----------------------------------------------------------------------------
+# Nearest-grid-point lookup and ensemble meteogram
+# -----------------------------------------------------------------------------
+from .meteogram_helpers import get_nearest_grid_point, build_meteogram
 
 # -----------------------------------------------------------------------------
 # Diagnostics — GFS analysis
@@ -95,7 +110,10 @@ from .plot_helpers import (
     plot_500hpa_relative_vorticity_advection,
     plot_250hpa_jet,
     plot_gfs_surface_chart,
+    plot_ensemble_mean_spread,
+    plot_compound_probability_animation,
     plot_upper_air_overview,
+    plot_four_panel_forecast_animation,
     # Skew-T diagrams
     init_skewt_figure,
     add_skewt_mixing_lines,
@@ -157,7 +175,17 @@ __all__ = [
     # plot_helpers — upper-air station plot
     "plot_europe_500hpa_stations",
     # herbie_gfs
+    "resolve_gfs_data_folder",
     "fetch_gfs_analysis",
+    "fetch_gfs_forecast",
+    "build_gfs_forecast_ds",
+    # herbie_gefs
+    "resolve_gefs_data_folder",
+    "fetch_gefs_members",
+    "build_gefs_forecast_da",
+    # meteogram_helpers
+    "get_nearest_grid_point",
+    "build_meteogram",
     # gfs_diagnostics
     "compute_temperature_advection",
     "compute_relative_vorticity",
@@ -171,7 +199,10 @@ __all__ = [
     "plot_500hpa_relative_vorticity_advection",
     "plot_250hpa_jet",
     "plot_gfs_surface_chart",
+    "plot_ensemble_mean_spread",
+    "plot_compound_probability_animation",
     "plot_upper_air_overview",
+    "plot_four_panel_forecast_animation",
     # plot_helpers — skew-T diagrams
     "init_skewt_figure",
     "add_skewt_mixing_lines",
