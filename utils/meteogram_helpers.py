@@ -5,8 +5,8 @@ Purpose: Nearest-grid-point identification and three-panel ensemble meteogram fo
          the point-based ensemble forecast section.
 
 Author(s): Christos Giannaros, One Weather Lab, University of Ioannina <chris.giannaros@uoi.gr>
-Last updated: 2026-05-22
-Version: 1.3.0
+Last updated: 2026-06-02
+Version: 1.3.1
 License: MIT
 
 Notes:
@@ -332,5 +332,4 @@ def build_meteogram(
     plt.show()
     plt.close(fig)
 
-    LOG.info("Meteogram saved to %s", out_path)
     return out_path.resolve()
