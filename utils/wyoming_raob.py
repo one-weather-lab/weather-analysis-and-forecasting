@@ -30,7 +30,8 @@ Notes:
     Example: http://weather.uwyo.edu/cgi-bin/sounding?region=europe&TYPE=TEXT:LIST&YEAR=2026&MONTH=04&FROM=1200&TO=1200&STNM=16716
 
   Fallback — University of Wyoming WSGI/BUFR archive:
-    Used automatically when the primary returns "Can't get".
+    Used automatically when the primary request fails (e.g. HTTP error)
+    or returns "Can't get".
     Endpoint: http://weather.uwyo.edu/wsgi/sounding
     Parameters: datetime (YYYY-MM-DD HH:MM:SS), id (WMO), src=BUFR,
                 type=TEXT:LIST
@@ -340,14 +341,15 @@ def fetch_retrospective_sounding(
     )
 
     url = _build_wyoming_url(station_id, sounding_dt)
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()
     try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
         df = _parse_wyoming_text(resp.text)
-    except ValueError as exc:
-        if "Can't get" not in str(exc):
+    except (requests.exceptions.RequestException, ValueError) as exc:
+        if isinstance(exc, ValueError) and "Can't get" not in str(exc):
             raise
-        # Primary has no data — try the WSGI/BUFR fallback
+        # If primary cgi-bin endpoint is unreachable/unavailable or has no data 
+        # try the WSGI/BUFR fallback.
         url = _build_wsgi_url(station_id, sounding_dt)
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
